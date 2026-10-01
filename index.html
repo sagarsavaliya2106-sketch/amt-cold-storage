@@ -1,0 +1,1426 @@
+<title>AMT Cold Storage</title>
+<meta name="theme-color" content="#0F2D59">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Hind:wght@400;500;600;700&display=swap">
+<script>
+  // Lock zoom so the page behaves like an app on phones (keeps viewport-fit=cover for safe areas).
+  (function () {
+    var c = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover';
+    var m = document.querySelector('meta[name="viewport"]');
+    if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
+    m.setAttribute('content', c);
+  })();
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          navy: { DEFAULT: '#0F2D59', 50: '#EEF3FA', 100: '#DCE5F2', 200: '#B7C8E3', 300: '#88A3CC', 400: '#5378B0', 500: '#2D5592', 600: '#1D4277', 700: '#153667', 800: '#0F2D59', 900: '#0A1F3F' },
+          amt: { DEFAULT: '#E07A00', 50: '#FFF6EA', 100: '#FFE8C8', 200: '#FFCF8A', 300: '#F7A93F', 500: '#E07A00', 600: '#C06800', 700: '#984F00' },
+          ink: '#14223A',
+          mist: '#5B6B84',
+          canvas: '#F1F4F9'
+        },
+        fontFamily: {
+          sans: ['Hind', '"Noto Sans Devanagari"', 'system-ui', 'sans-serif'],
+          display: ['"Baloo 2"', 'Hind', 'system-ui', 'sans-serif']
+        }
+      }
+    }
+  };
+</script>
+<style>
+  /* Layout: navy app bar; desktop (>=768px) left nav for Munimji, phone gets a fixed bottom tab bar + bottom sheets. */
+  :root {
+    --bg: #F1F4F9;
+    --fg: #14223A;
+    --navy: #0F2D59;
+    --amber: #E07A00;
+    --inward: #059669;
+    --outward: #E11D48;
+    color-scheme: light;
+  }
+  html, body { height: 100%; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body { background: var(--bg); color: var(--fg); font-family: Hind, "Noto Sans Devanagari", system-ui, sans-serif; touch-action: manipulation; -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+  button, a, label, input, select { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  .num { font-variant-numeric: tabular-nums; }
+  .font-display { letter-spacing: -0.01em; }
+  .eyebrow { letter-spacing: 0.08em; text-transform: uppercase; }
+  h1, h2, h3 { text-wrap: balance; }
+  .no-select { -webkit-user-select: none; user-select: none; }
+  button { transition-property: transform, background-color, color, border-color, box-shadow, opacity; transition-duration: .15s; }
+  button:active:not(:disabled) { transform: scale(.97); }
+  .qr img, .qr canvas { width: 100% !important; height: auto !important; image-rendering: pixelated; }
+  .fade-in { animation: fadeIn .22s ease-out; }
+  .pop-in { animation: popIn .22s cubic-bezier(.2,.9,.3,1.2); }
+  .slide-in { animation: slideIn 1.2s ease-out; }
+  @keyframes fadeIn { from { opacity: .4 } to { opacity: 1 } }
+  @keyframes popIn { from { transform: translateY(10px) scale(.98); opacity: .6 } to { transform: none; opacity: 1 } }
+  @keyframes slideIn { from { background: #FFF1DC } to { background: transparent } }
+  @keyframes sheetIn { from { transform: translateY(45%); opacity: .4 } to { transform: none; opacity: 1 } }
+  @keyframes pulseDot { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  .live-dot { animation: pulseDot 1.6s ease-in-out infinite; }
+  .top-bar { top: env(safe-area-inset-top, 0px); }
+  .bottom-nav { padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .above-nav { bottom: calc(env(safe-area-inset-bottom, 0px) + 70px); }
+  .sheet-pad { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); }
+  .toast-pos { top: calc(env(safe-area-inset-top, 0px) + 64px); }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  @media (max-width: 767px) {
+    input, select, textarea { font-size: 16px !important; }
+    .sheet { animation: sheetIn .28s cubic-bezier(.2,.9,.3,1); }
+  }
+  @media (min-width: 768px) {
+    .sheet { animation: popIn .22s cubic-bezier(.2,.9,.3,1.2); }
+    .toast-pos { top: auto; bottom: 32px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/htm@3.1.1/dist/htm.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function () {
+  const { useState, useEffect, useMemo, useRef, useCallback } = React;
+  const html = htm.bind(React.createElement);
+
+  /* ---------------- helpers ---------------- */
+  function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+  const DAY = 86400000;
+  const TODAY = new Date(2026, 9, 2);
+  const safe = n => (typeof n === 'number' && isFinite(n) ? n : 0);
+  const fmt = n => Math.round(safe(n)).toLocaleString('en-IN');
+  const rs = n => '₹' + fmt(n);
+  const iso = d => { const z = new Date(d); return z.getFullYear() + '-' + String(z.getMonth() + 1).padStart(2, '0') + '-' + String(z.getDate()).padStart(2, '0'); };
+  const parseIso = s => { const p = String(s || '').split('-').map(Number); return p.length === 3 && p.every(isFinite) ? new Date(p[0], p[1] - 1, p[2]) : TODAY; };
+  const daysSince = s => Math.max(0, Math.round((TODAY - parseIso(s)) / DAY));
+  const fmtDate = (s, lang) => parseIso(s).toLocaleDateString(lang === 'hi' ? 'hi-IN' : 'en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  const nowTime = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+  const pad = (n, w) => String(n).padStart(w, '0');
+  const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const digits = s => String(s || '').replace(/\D/g, '');
+  // Whole positive number from any input ("", "12.5", "-3", "1e3" are rejected).
+  const toBags = v => { const s = String(v == null ? '' : v).trim(); if (!/^\d+$/.test(s)) return NaN; return parseInt(s, 10); };
+  const toMoney = v => { const s = String(v == null ? '' : v).trim(); if (!/^\d+(\.\d+)?$/.test(s)) return NaN; return parseFloat(s); };
+  const RATE = { rent: 130, hamali: 10, bardana: 25, interest: 0.015 };
+  // Simple interest: 1.5% per month, counted by days (30-day month), rounded to the rupee.
+  const interestOf = a => { const d = daysSince(a.date); const val = a.noInt ? 0 : Math.round(safe(a.amt) * RATE.interest * d / 30); return { days: d, val: safe(val) }; };
+  const dur = (d, t) => { const m = Math.floor(d / 30), r = d % 30; return (m ? m + ' ' + t('months') + ' ' : '') + r + ' ' + t('days'); };
+  const lotNo = n => 'LOT-' + (1000 + n);
+
+  /* ---------------- plant constants ---------------- */
+  const PLANT_CAP = 120000;
+  const CH_CAP = 25000;
+  const CELL_CAP = 625;
+  const FLOORS = 4, GULLAS = 10;
+  const CH_TOTAL = [21500, 24000, 18200, 20620];
+  const CH_TEMP = [2.8, 3.1, 2.5, 3.0];
+  const CH_RH = [90, 92, 88, 91];
+  const STORE_KEY = 'amt-demo-v2';
+
+  const COM = {
+    safed: { en: 'Safed Aloo', hi: 'सफ़ेद आलू', tag: { en: 'Table', hi: 'टेबल' }, color: '#B88A0B' },
+    lal: { en: 'Lal Aloo', hi: 'लाल आलू', tag: { en: 'Table', hi: 'टेबल' }, color: '#C2410C' },
+    beej: { en: 'Beej Aloo', hi: 'बीज आलू', tag: { en: 'Seed', hi: 'बीज' }, color: '#0F766E' },
+    lahsun: { en: 'Lahsun', hi: 'लहसुन', tag: { en: 'Garlic', hi: 'लहसुन' }, color: '#7C3AED' }
+  };
+  const CH_MAIN = [
+    { en: 'Table Aloo', hi: 'टेबल आलू' }, { en: 'Beej Aloo', hi: 'बीज आलू' },
+    { en: 'Aloo + Lahsun', hi: 'आलू + लहसुन' }, { en: 'Mixed Aloo', hi: 'मिक्स आलू' }
+  ];
+
+  /* ---------------- sample data (deterministic) ---------------- */
+  const rng = mulberry32(20260302);
+  const BASE_OWNERS = [
+    ['Rameshwar Patel', 'Mauranipur', 3], ['Dharmendra Yadav', 'Bhojpura', 3], ['Bundelkhand Traders', 'Jhansi', 7], ['Kailash Kushwaha', 'Niwari', 3],
+    ['Ramkishan Ahirwar', 'Prithvipur', 1], ['Santosh Rajput', 'Orchha', 1], ['Mahesh Lodhi', 'Tikamgarh', 1], ['Shivam Agro', 'Jhansi', 3],
+    ['Raju Pal', 'Garautha', 1], ['Govind Kushwaha', 'Babina', 1], ['Brijesh Yadav', 'Niwari', 1], ['Ashok Sahu', 'Prithvipur', 1],
+    ['Hariom Patel', 'Mauranipur', 2], ['Mohd. Irfan', 'Jhansi', 1], ['Pappu Rajak', 'Bhojpura', 1], ['Vinod Parihar', 'Orchha', 1],
+    ['Lakhan Singh Bundela', 'Jeron', 1], ['Kamlesh Ahirwar', 'Tarichar Kalan', 1], ['Sunil Kushwaha', 'Niwari', 1], ['Rajendra Lodhi', 'Prithvipur', 1],
+    ['Gajendra Yadav', 'Bhojpura', 1], ['Maa Sharda Traders', 'Mauranipur', 3], ['Jagdish Pal', 'Babina', 1], ['Om Prakash Sen', 'Niwari', 1],
+    ['Devendra Rajput', 'Orchha', 1], ['Jai Kisan Aloo Co.', 'Jhansi', 2], ['Ramesh Ahirwar', 'Jeron', 1], ['Bhagwan Das Kushwaha', 'Garautha', 1],
+    ['Naresh Patel', 'Mauranipur', 1], ['Shyam Sundar Yadav', 'Bhojpura', 1], ['Pushpendra Lodhi', 'Tikamgarh', 1], ['Mukesh Kushwaha', 'Prithvipur', 1]
+  ].map(([name, village, w], i) => ({ id: i, name, village, w, mobile: String(6 + Math.floor(rng() * 4)) + pad(Math.floor(rng() * 1e9), 9) }));
+  const OWNERS = BASE_OWNERS.map(o => ({ ...o }));
+  const W_SUM = BASE_OWNERS.reduce((a, o) => a + o.w, 0);
+  const pickOwner = () => { let r = rng() * W_SUM; for (const o of BASE_OWNERS) { r -= o.w; if (r <= 0) return o.id; } return 0; };
+  const pickCom = (ch, f) => {
+    const r = rng();
+    if (ch === 0) return r < 0.6 ? 'safed' : 'lal';
+    if (ch === 1) return 'beej';
+    if (ch === 2) return f === 3 ? 'lahsun' : (r < 0.55 ? 'safed' : 'lal');
+    return r < 0.5 ? 'lal' : r < 0.8 ? 'safed' : 'beej';
+  };
+  const fmtMobile = m => { const d = digits(m); return d.length === 10 ? d.slice(0, 5) + ' ' + d.slice(5) : (d || '—'); };
+
+  function buildInitial() {
+    const cells = [], all = [];
+    for (let ch = 0; ch < 4; ch++) {
+      const rel = Array.from({ length: 40 }, (_, i) => { let b = 0.72 + 0.28 * rng(); if (ch === 2 && Math.floor(i / 10) === 3) b *= 0.55; return b; });
+      const s = rel.reduce((a, b) => a + b, 0);
+      const vals = rel.map(r => Math.min(620, Math.round(r / s * CH_TOTAL[ch] / 10) * 10));
+      let diff = CH_TOTAL[ch] - vals.reduce((a, b) => a + b, 0), i = 0;
+      while (diff !== 0 && i < 200000) { const k = i % 40; if (diff > 0 && vals[k] <= 610) { vals[k] += 10; diff -= 10; } else if (diff < 0 && vals[k] >= 60) { vals[k] -= 10; diff += 10; } i++; }
+      const chamber = [];
+      for (let f = 0; f < FLOORS; f++) {
+        const floor = [];
+        for (let g = 0; g < GULLAS; g++) {
+          const v = vals[f * 10 + g];
+          const n = v < 160 ? 1 : (rng() < 0.45 ? 1 : rng() < 0.7 ? 2 : 3);
+          const parts = []; let rem = v;
+          for (let j = 0; j < n - 1; j++) { let p = Math.round(rem * (0.3 + 0.4 * rng()) / 10) * 10; p = Math.max(50, Math.min(rem - 50 * (n - 1 - j), p)); parts.push(p); rem -= p; }
+          parts.push(rem);
+          floor.push(parts.filter(p => p > 0).map(p => {
+            const lot = { id: '', owner: pickOwner(), bags: p, com: pickCom(ch, f), date: iso(new Date(2026, 1, 10).getTime() + Math.floor(rng() * 74) * DAY) };
+            all.push(lot); return lot;
+          }));
+        }
+        chamber.push(floor);
+      }
+      cells.push(chamber);
+    }
+    all.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+    all.forEach((l, i) => { l.id = lotNo(i + 1); });
+    const hasStock = new Set(all.map(l => l.owner));
+    const adv = {
+      0: [{ date: '2026-05-10', amt: 150000 }],
+      1: [{ date: '2026-06-22', amt: 80000 }, { date: '2026-08-14', amt: 40000 }],
+      3: [{ date: '2026-04-28', amt: 60000 }]
+    };
+    BASE_OWNERS.forEach(o => {
+      if (o.id < 4 || !hasStock.has(o.id)) return;
+      if (rng() < 0.55) adv[o.id] = [{ date: iso(new Date(2026, 4, 1).getTime() + Math.floor(rng() * 110) * DAY), amt: (2 + Math.floor(rng() * 16)) * 10000 }];
+    });
+    return { cells, adv, nextLot: all.length + 1 };
+  }
+  const INIT = buildInitial();
+  const INIT_EVENTS = [
+    { id: 'e9', time: '11:18', type: 'in', owner: 'Kailash Kushwaha', vehicle: 'MP-36 ZB 4417', bags: 620, com: 'safed', place: 'C3 · F2' },
+    { id: 'e8', time: '11:05', type: 'pay', owner: 'Bundelkhand Traders', amt: 100000, note: 'RTGS' },
+    { id: 'e7', time: '10:52', type: 'out', owner: 'Bundelkhand Traders', vehicle: 'UP-93 T 2208', bags: 500, com: 'beej', place: 'GP-0921' },
+    { id: 'e6', time: '10:31', type: 'in', owner: 'Rameshwar Patel', vehicle: 'UP-93 AK 3391', bags: 480, com: 'lal', place: 'C4 · F1' },
+    { id: 'e5', time: '10:10', type: 'out', owner: 'Shivam Agro', vehicle: 'UP-93 BT 1180', bags: 400, com: 'safed', place: 'GP-0922' },
+    { id: 'e4', time: '09:47', type: 'in', owner: 'Dharmendra Yadav', vehicle: 'MP-36 ZA 1152', bags: 750, com: 'beej', place: 'C2 · F3' },
+    { id: 'e3', time: '09:30', type: 'pay', owner: 'Dharmendra Yadav', amt: 68500, note: 'Cash' },
+    { id: 'e2', time: '09:12', type: 'out', owner: 'Maa Sharda Traders', vehicle: 'UP-93 AT 7765', bags: 300, com: 'lal', place: 'GP-0923' },
+    { id: 'e1', time: '08:40', type: 'in', owner: 'Hariom Patel', vehicle: 'UP-93 AK 0219', bags: 600, com: 'safed', place: 'C1 · F4' }
+  ];
+  const freshState = () => ({
+    cells: JSON.parse(JSON.stringify(INIT.cells)),
+    adv: JSON.parse(JSON.stringify(INIT.adv)),
+    events: INIT_EVENTS.map(e => ({ ...e })),
+    nextLot: INIT.nextLot,
+    counters: { bill: 457, gp: 924 },
+    extra: []
+  });
+
+  /* ---------------- persistence (this browser only) ---------------- */
+  function validState(s) {
+    try {
+      if (!s || s.v !== 2) return false;
+      if (!Array.isArray(s.extra) || !Array.isArray(s.events) || !s.adv || typeof s.adv !== 'object') return false;
+      if (!(Number.isInteger(s.nextLot) && s.nextLot > 0) || !s.counters || !(s.counters.bill > 0) || !(s.counters.gp > 0)) return false;
+      const maxOwner = BASE_OWNERS.length + s.extra.length;
+      if (!Array.isArray(s.cells) || s.cells.length !== 4) return false;
+      for (const ch of s.cells) {
+        if (!Array.isArray(ch) || ch.length !== FLOORS) return false;
+        for (const f of ch) {
+          if (!Array.isArray(f) || f.length !== GULLAS) return false;
+          for (const g of f) {
+            if (!Array.isArray(g) || cellSum(g) > CELL_CAP) return false;
+            for (const l of g) if (!l || typeof l.id !== 'string' || !(Number.isInteger(l.bags) && l.bags > 0) || !COM[l.com] || !(Number.isInteger(l.owner) && l.owner >= 0 && l.owner < maxOwner)) return false;
+          }
+        }
+      }
+      for (const k in s.adv) { if (!Array.isArray(s.adv[k])) return false; for (const a of s.adv[k]) if (!a || !(a.amt >= 0) || typeof a.date !== 'string') return false; }
+      return true;
+    } catch (e) { return false; }
+  }
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (raw) { const s = JSON.parse(raw); if (validState(s)) return s; }
+    } catch (e) { }
+    return null;
+  }
+  function saveState(s) { try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 2, ...s })); return true; } catch (e) { return false; } }
+  function applyExtraOwners(extra) {
+    OWNERS.length = BASE_OWNERS.length;
+    BASE_OWNERS.forEach((o, i) => { OWNERS[i] = { ...o }; });
+    (extra || []).forEach(o => { OWNERS.push({ id: OWNERS.length, name: String((o && o.name) || '—'), village: (o && o.village) || '—', w: 0, mobile: (o && o.mobile) || '' }); });
+  }
+
+  /* ---------------- stock math ---------------- */
+  function cellSum(lots) { return lots.reduce((a, l) => a + safe(l && l.bags), 0); }
+  const chamberSum = ch => ch.reduce((a, f) => a + f.reduce((b, g) => b + cellSum(g), 0), 0);
+  const cloneCells = c => c.map(ch => ch.map(f => f.map(g => g.map(l => ({ ...l })))));
+  // Fill from a starting gulla onward (same chamber), spilling into the next gullas/floors.
+  function allocate(cells, ch, f0, g0, bags) {
+    const order = [];
+    for (let f = 0; f < FLOORS; f++) for (let g = 0; g < GULLAS; g++) order.push([f, g]);
+    let start = order.findIndex(([f, g]) => f === f0 && g === g0); if (start < 0) start = 0;
+    const seq = order.slice(start).concat(order.slice(0, start));
+    const out = []; let rem = bags;
+    for (const [f, g] of seq) {
+      if (rem <= 0) break;
+      const free = CELL_CAP - cellSum(cells[ch][f][g]);
+      if (free <= 0) continue;
+      const n = Math.min(free, rem); out.push({ f, g, n }); rem -= n;
+    }
+    return rem > 0 ? null : out;
+  }
+  function bestStart(cells, ch) {
+    let best = { f: 0, g: 0 }, bf = -1;
+    for (let f = 0; f < FLOORS; f++) for (let g = 0; g < GULLAS; g++) { const fr = CELL_CAP - cellSum(cells[ch][f][g]); if (fr > bf) { bf = fr; best = { f, g }; } }
+    return best;
+  }
+  const locLabel = (ch, parts) => {
+    if (!parts || !parts.length) return '';
+    const one = p => 'F' + (p.f + 1) + ' · G' + pad(p.g + 1, 2);
+    return 'C' + (ch + 1) + ' · ' + one(parts[0]) + (parts.length > 1 ? ' → ' + one(parts[parts.length - 1]) : '');
+  };
+  // Search: every typed word must match name, village, mobile digits or a lot no. Case-insensitive, partial.
+  function ownerMatches(o, q, lotIds) {
+    const words = norm(q).split(' ').filter(Boolean);
+    if (!words.length) return true;
+    const hay = norm(o.name + ' ' + o.village + ' ' + (lotIds || []).join(' '));
+    const mob = digits(o.mobile);
+    return words.every(w => hay.includes(w) || (/^\d{3,}$/.test(w) && mob.includes(w)));
+  }
+
+  // Apply a payment to advances: interest first, then principal (oldest first). Whatever is left
+  // is carried forward from today, so interest is never counted twice.
+  function settleAdvances(list, pay) {
+    if (!list || !list.length || !(pay > 0)) return list || [];
+    const rows = list.map(a => ({ ...a, int: interestOf(a).val })).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+    const totInt = rows.reduce((s, r) => s + r.int, 0);
+    let p = pay;
+    const intPaid = Math.min(p, totInt); p -= intPaid;
+    const unpaidInt = totInt - intPaid;
+    const out = [];
+    rows.forEach(r => { const cut = Math.min(p, r.amt); p -= cut; const left = Math.round(r.amt - cut); if (left > 0) out.push({ date: iso(TODAY), amt: left, carry: true, noInt: !!r.noInt, byaj: !!r.byaj }); });
+    if (unpaidInt > 0) out.push({ date: iso(TODAY), amt: Math.round(unpaidInt), noInt: true, carry: true, byaj: true });
+    return out;
+  }
+
+  /* ---------------- language ---------------- */
+  const DICT = {
+    en: {
+      tagline: 'Bhojpura, Niwari (M.P.)', demo: 'Demo · Sample data', plant: 'Bhojpura, Niwari (M.P.)', live: 'LIVE',
+      nav_dash: 'Dashboard', nav_in: 'Gadi Inward', nav_map: 'Chamber Map', nav_khata: 'Kisan Khata & Bill',
+      nav_dash_s: 'Live stock & vasooli', nav_in_s: 'Nayi gadi aawak', nav_map_s: 'Rack-wise bori stock', nav_khata_s: 'Byaj, nikasi & gate pass',
+      bn_dash: 'Dashboard', bn_in: 'Inward', bn_map: 'Chamber', bn_khata: 'Khata & Bill',
+      shortcuts: 'Keyboard: Alt + 1 / 2 / 3 / 4',
+      greet: 'AMT COLD STORAGE — BHOJPURA, NIWARI (M.P.)', dash_sub: 'Daily Live Operations & Stock Dashboard', new_gadi: 'Nayi Gadi',
+      kpi_stock: 'Total Bori Stock', kpi_in: 'Aaj ki Inward', kpi_out: 'Aaj ka Dispatch', kpi_cash: 'Aaj ki Vasooli',
+      cap: 'Capacity', full: 'Full', gadi: 'gadi', gatepass: 'gate pass', payments: 'payment', cash_in_hand: 'Cash in hand', bori: 'Bori', mt: 'MT',
+      baaki: 'Market mein baaki Advance + Byaj', kisan: 'kisan', view_khata: 'Khata dekho',
+      ch_status: 'Chamber Status', ch: 'Chamber', temp: 'Temp', rh: 'Nami', ok: 'Theek', nearfull: 'Lagbhag full', updated: 'Updated',
+      activity: 'Gate Activity', ev_in: 'Inward', ev_out: 'Dispatch', ev_pay: 'Payment',
+      in_title: 'Nayi Gadi Aawak', in_sub: 'Gate par gadi aate hi entry karein. Enter dabane se save ho jayega.',
+      f_name: 'Kisan / Party ka naam', f_village: 'Gaon', f_mobile: 'Mobile', f_vehicle: 'Gadi No.', f_bags: 'Kul Bori', f_com: 'Maal', f_bardana: 'Bardana',
+      bd_kisan: 'Kisan ka', bd_store: 'Storage ka', f_place: 'Kahan rakhna hai', f_floor: 'Floor', f_gulla: 'Gulla se shuru', auto: 'Auto chuno', free: 'khaali',
+      save_token: 'Save & Lot Token banao', known: 'Purana kisan: details apne aap bhar gayi', new_party: 'Naya kisan: save karte hi naya khata banega',
+      err_name: 'Kisan / party ka naam bharein.', err_vehicle: 'Gadi no. bharein (kam se kam 4 akshar).',
+      err_bags: 'Bori ki ginti 1 ya usse zyada poori sankhya honi chahiye (0, minus ya point wali nahi).', err_mobile: 'Mobile no. 10 ank ka ho aur 6, 7, 8 ya 9 se shuru ho. Na pata ho toh khaali chhod dein.',
+      err_chamber: 'Chamber {c} mein sirf {n} bori ki jagah bachi hai! Kripya doosre chamber me dalein.', err_max: 'Ek gadi mein {n} se zyada bori nahi ho sakti. Ginti dobara dekhein.',
+      space_title: 'Chamber mein jagah', target: 'Yahan rakhenge', spill: '{n} gulla mein rakha jayega',
+      token_title: 'Lot Parchi', lot_no: 'Lot No.', date: 'Tareekh', location: 'Location', token_note: 'Nikasi ke samay yeh parchi ya QR dikhayein.',
+      wa: 'WhatsApp par bhejo', new_entry: 'Nayi entry', close: 'Band karo', wa_demo: 'Demo: asli system mein yeh kisan ke WhatsApp par apne aap jayega.',
+      map_title: 'Chamber & Rack Map', map_sub: 'Kisi bhi gulla par tap karein: kiska maal, kab aaya, kitni bori.', find_owner: 'Naam, gaon, mobile ya lot no.',
+      matches: '{n} gulla mein maal mila', no_match: 'Is chamber mein koi maal nahi mila', empty_cell: 'Yeh gulla khaali hai', open_khata: 'Khata kholo', days: 'din', arrived: 'Aamad', filled: 'bhara',
+      cell_note: 'Har gulla = 625 bori. Gehra rang = zyada bhara.',
+      kh_title: 'Kisan Khata & Nikasi Bill', kh_sub: 'Kisan dhoondo, jama maal aur byaj dekho, turant bill banao.', search: 'Naam, gaon, mobile ya lot no…', no_results: 'Koi kisan nahi mila. Spelling ya mobile no. dobara dekhein.',
+      stock: 'Jama Maal', lot: 'Lot', bags: 'Bori', place: 'Jagah', stored: 'Kitne din',
+      adv_title: 'Advance & Byaj', adv_rate: 'Byaj 1.5% mahina', given: 'Diya', amount: 'Rakam', interest: 'Byaj', total: 'Kul', carry: 'Pichhla baaki', unpaid_int: 'Baaki byaj (bina byaj)',
+      no_adv: 'Is kisan par koi advance baaki nahi. Bill mein sirf Bhada + Hamali + Bardana judega.', no_stock: 'Is kisan ka koi maal jama nahi hai.',
+      bill_title: 'Nikasi Bill Calculator', release: 'Kitni bori nikalni hai', all: 'Sab', rent: 'Bhada', hamali: 'Hamali', bardana: 'Bardana',
+      charges: 'Storage kharcha', adv_int: 'Advance + Byaj', use_bardana: 'Bardana storage ka hai', remain_bags: 'Stock mein baaki rahegi',
+      adv_now: 'Advance + byaj mein abhi jama', full_amt: 'Poora', none: 'Kuch nahi', adv_left: 'Baaki advance (khate mein rahega)',
+      mode_cash: 'Kisan nakad dega', mode_sale: 'Bikri se katauti', sale_rate: 'Bikri rate / bori', sale_val: 'Maal ki bikri', after_charges: 'Kharcha kaat kar bacha', adv_cut: 'Advance + byaj katauti',
+      to_collect: 'Kisan se lena', to_pay: 'Kisan ko dena', settled: 'Hisaab barabar', make_short: 'Bill banao',
+      err_rel: 'Is kisan ke paas sirf {n} bori jama hai.', err_relnum: 'Bori ki ginti poori sankhya mein likhein (0 se {n} tak).', err_rate: 'Bikri rate sahi likhein (₹ mein, 0 se zyada).',
+      err_advamt: 'Advance jama 0 se {n} ke beech hona chahiye.', err_nothing: 'Bori nikalni ho ya advance jama karna ho, kuch to daalein.',
+      make_bill: 'Pakka Bill & WhatsApp Gate Pass', bill: 'Pakka Bill', gp: 'Gate Pass', vehicle_out: 'Nikasi gadi no.', adv_receipt: 'Advance Jama Raseed',
+      finalize: 'Final karo & WhatsApp bhejo', print_note: 'Asli system mein yeh bill printer par chhapega aur kisan ke WhatsApp par jayega.', err_vout: 'Nikasi gadi no. bharein.',
+      done_in: 'Lot {id} save hua. Stock mein +{n} bori.', done_out: 'Bill final. {n} bori nikasi, gate pass {gp}.', done_adv: 'Advance jama: {amt}.',
+      per_bag: '/bori', months: 'mahine', farmer: 'Kisan', outstanding: 'Baaki',
+      reset: 'Reset Demo', reset_q: 'Demo data reset karein?', reset_d: 'Aapki daali hui saari entry hat jayegi aur shuru wala sample data wapas aa jayega.', yes_reset: 'Haan, reset karo', cancel: 'Nahi', reset_done: 'Demo data wapas shuru jaisa ho gaya.',
+      saved_here: 'Entry isi browser mein save rehti hai', not_saved: 'Is browser mein save nahi ho pa raha. Refresh par data wapas shuru ho jayega.'
+    },
+    hi: {
+      tagline: 'भोजपुरा, निवाड़ी (म.प्र.)', demo: 'डेमो · नमूना डेटा', plant: 'भोजपुरा, निवाड़ी (म.प्र.)', live: 'लाइव',
+      nav_dash: 'डैशबोर्ड', nav_in: 'गाड़ी आवक', nav_map: 'चैम्बर मैप', nav_khata: 'किसान खाता और बिल',
+      nav_dash_s: 'लाइव स्टॉक और वसूली', nav_in_s: 'नई गाड़ी आवक', nav_map_s: 'रैक के हिसाब से बोरी', nav_khata_s: 'ब्याज, निकासी और गेट पास',
+      bn_dash: 'डैशबोर्ड', bn_in: 'आवक', bn_map: 'चैम्बर', bn_khata: 'खाता-बिल',
+      shortcuts: 'कीबोर्ड: Alt + 1 / 2 / 3 / 4',
+      greet: 'AMT कोल्ड स्टोरेज — भोजपुरा, निवाड़ी (म.प्र.)', dash_sub: 'डेली लाइव ऑपरेशन्स और स्टॉक डैशबोर्ड', new_gadi: 'नई गाड़ी',
+      kpi_stock: 'कुल बोरी स्टॉक', kpi_in: 'आज की आवक', kpi_out: 'आज का डिस्पैच', kpi_cash: 'आज की वसूली',
+      cap: 'क्षमता', full: 'भरा', gadi: 'गाड़ी', gatepass: 'गेट पास', payments: 'भुगतान', cash_in_hand: 'हाथ में नकद', bori: 'बोरी', mt: 'टन',
+      baaki: 'बाज़ार में बाकी एडवांस + ब्याज', kisan: 'किसान', view_khata: 'खाता देखें',
+      ch_status: 'चैम्बर की स्थिति', ch: 'चैम्बर', temp: 'तापमान', rh: 'नमी', ok: 'ठीक', nearfull: 'लगभग फुल', updated: 'अपडेट',
+      activity: 'गेट की हलचल', ev_in: 'आवक', ev_out: 'डिस्पैच', ev_pay: 'भुगतान',
+      in_title: 'नई गाड़ी आवक', in_sub: 'गेट पर गाड़ी आते ही एंट्री करें। Enter दबाने से सेव हो जाएगा।',
+      f_name: 'किसान / पार्टी का नाम', f_village: 'गाँव', f_mobile: 'मोबाइल', f_vehicle: 'गाड़ी नंबर', f_bags: 'कुल बोरी', f_com: 'माल', f_bardana: 'बारदाना',
+      bd_kisan: 'किसान का', bd_store: 'स्टोरेज का', f_place: 'कहाँ रखना है', f_floor: 'फ्लोर', f_gulla: 'गुल्ला से शुरू', auto: 'ऑटो चुनें', free: 'खाली',
+      save_token: 'सेव करें और लॉट टोकन बनाएँ', known: 'पुराना किसान: जानकारी अपने आप भर गई', new_party: 'नया किसान: सेव करते ही नया खाता बनेगा',
+      err_name: 'किसान / पार्टी का नाम भरें।', err_vehicle: 'गाड़ी नंबर भरें (कम से कम 4 अक्षर)।',
+      err_bags: 'बोरी की गिनती 1 या उससे ज़्यादा पूरी संख्या होनी चाहिए (0, माइनस या पॉइंट वाली नहीं)।', err_mobile: 'मोबाइल नंबर 10 अंक का हो और 6, 7, 8 या 9 से शुरू हो। न पता हो तो खाली छोड़ दें।',
+      err_chamber: 'चैम्बर {c} में सिर्फ़ {n} बोरी की जगह बची है! कृपया दूसरे चैम्बर में डालें।', err_max: 'एक गाड़ी में {n} से ज़्यादा बोरी नहीं हो सकती। गिनती दोबारा देखें।',
+      space_title: 'चैम्बर में जगह', target: 'यहाँ रखेंगे', spill: '{n} गुल्लों में रखा जाएगा',
+      token_title: 'लॉट पर्ची', lot_no: 'लॉट नंबर', date: 'तारीख', location: 'जगह', token_note: 'निकासी के समय यह पर्ची या QR दिखाएँ।',
+      wa: 'WhatsApp पर भेजें', new_entry: 'नई एंट्री', close: 'बंद करें', wa_demo: 'डेमो: असली सिस्टम में यह किसान के WhatsApp पर अपने आप जाएगा।',
+      map_title: 'चैम्बर और रैक मैप', map_sub: 'किसी भी गुल्ले पर टैप करें: किसका माल, कब आया, कितनी बोरी।', find_owner: 'नाम, गाँव, मोबाइल या लॉट नंबर',
+      matches: '{n} गुल्लों में माल मिला', no_match: 'इस चैम्बर में कोई माल नहीं मिला', empty_cell: 'यह गुल्ला खाली है', open_khata: 'खाता खोलें', days: 'दिन', arrived: 'आवक', filled: 'भरा',
+      cell_note: 'हर गुल्ला = 625 बोरी। गहरा रंग = ज़्यादा भरा।',
+      kh_title: 'किसान खाता और निकासी बिल', kh_sub: 'किसान ढूँढें, जमा माल और ब्याज देखें, तुरंत बिल बनाएँ।', search: 'नाम, गाँव, मोबाइल या लॉट नंबर…', no_results: 'कोई किसान नहीं मिला। स्पेलिंग या मोबाइल नंबर दोबारा देखें।',
+      stock: 'जमा माल', lot: 'लॉट', bags: 'बोरी', place: 'जगह', stored: 'कितने दिन',
+      adv_title: 'एडवांस और ब्याज', adv_rate: 'ब्याज 1.5% महीना', given: 'दिया', amount: 'रकम', interest: 'ब्याज', total: 'कुल', carry: 'पिछला बाकी', unpaid_int: 'बाकी ब्याज (बिना ब्याज)',
+      no_adv: 'इस किसान पर कोई एडवांस बाकी नहीं। बिल में सिर्फ़ भाड़ा + हमाली + बारदाना जुड़ेगा।', no_stock: 'इस किसान का कोई माल जमा नहीं है।',
+      bill_title: 'निकासी बिल कैलकुलेटर', release: 'कितनी बोरी निकालनी है', all: 'सब', rent: 'भाड़ा', hamali: 'हमाली', bardana: 'बारदाना',
+      charges: 'स्टोरेज खर्चा', adv_int: 'एडवांस + ब्याज', use_bardana: 'बारदाना स्टोरेज का है', remain_bags: 'स्टॉक में बाकी रहेगी',
+      adv_now: 'एडवांस + ब्याज में अभी जमा', full_amt: 'पूरा', none: 'कुछ नहीं', adv_left: 'बाकी एडवांस (खाते में रहेगा)',
+      mode_cash: 'किसान नकद देगा', mode_sale: 'बिक्री से कटौती', sale_rate: 'बिक्री रेट / बोरी', sale_val: 'माल की बिक्री', after_charges: 'खर्चा काटकर बचा', adv_cut: 'एडवांस + ब्याज कटौती',
+      to_collect: 'किसान से लेना', to_pay: 'किसान को देना', settled: 'हिसाब बराबर', make_short: 'बिल बनाएँ',
+      err_rel: 'इस किसान के पास सिर्फ़ {n} बोरी जमा है।', err_relnum: 'बोरी की गिनती पूरी संख्या में लिखें (0 से {n} तक)।', err_rate: 'बिक्री रेट सही लिखें (₹ में, 0 से ज़्यादा)।',
+      err_advamt: 'एडवांस जमा 0 से {n} के बीच होना चाहिए।', err_nothing: 'बोरी निकालनी हो या एडवांस जमा करना हो, कुछ तो डालें।',
+      make_bill: 'पक्का बिल और WhatsApp गेट पास', bill: 'पक्का बिल', gp: 'गेट पास', vehicle_out: 'निकासी गाड़ी नंबर', adv_receipt: 'एडवांस जमा रसीद',
+      finalize: 'फ़ाइनल करें और WhatsApp भेजें', print_note: 'असली सिस्टम में यह बिल प्रिंटर पर छपेगा और किसान के WhatsApp पर जाएगा।', err_vout: 'निकासी गाड़ी नंबर भरें।',
+      done_in: 'लॉट {id} सेव हुआ। स्टॉक में +{n} बोरी।', done_out: 'बिल फ़ाइनल। {n} बोरी निकासी, गेट पास {gp}।', done_adv: 'एडवांस जमा: {amt}।',
+      per_bag: '/बोरी', months: 'महीने', farmer: 'किसान', outstanding: 'बाकी',
+      reset: 'रीसेट डेमो', reset_q: 'डेमो डेटा रीसेट करें?', reset_d: 'आपकी डाली हुई सारी एंट्री हट जाएगी और शुरू वाला नमूना डेटा वापस आ जाएगा।', yes_reset: 'हाँ, रीसेट करें', cancel: 'नहीं', reset_done: 'डेमो डेटा वापस शुरू जैसा हो गया।',
+      saved_here: 'एंट्री इसी ब्राउज़र में सेव रहती है', not_saved: 'इस ब्राउज़र में सेव नहीं हो पा रहा। रिफ्रेश पर डेटा वापस शुरू हो जाएगा।'
+    }
+  };
+
+  /* ---------------- icons ---------------- */
+  const ICONS = {
+    home: html`<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/>`,
+    truck: html`<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>`,
+    snow: html`<path d="M12 2v20M4.9 4.9l14.2 14.2M2 12h20M4.9 19.1 19.1 4.9"/><path d="m9 4 3 3 3-3M9 20l3-3 3 3M4 9l3 3-3 3M20 9l-3 3 3 3"/>`,
+    wallet: html`<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>`,
+    search: html`<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>`,
+    x: html`<path d="M18 6 6 18M6 6l12 12"/>`,
+    thermo: html`<path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/>`,
+    drop: html`<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>`,
+    down: html`<path d="M17 7 7 17"/><path d="M17 17H7V7"/>`,
+    up: html`<path d="M7 7h10v10"/><path d="M7 17 17 7"/>`,
+    check: html`<path d="M20 6 9 17l-5-5"/>`,
+    send: html`<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>`,
+    box: html`<path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/>`,
+    rupee: html`<path d="M6 3h12M6 8h12M6 13l8.5 8M6 13h3"/><path d="M9 13c6.67 0 6.67-10 0-10"/>`,
+    plus: html`<path d="M12 5v14M5 12h14"/>`,
+    arrow: html`<path d="M5 12h14M13 6l6 6-6 6"/>`,
+    alert: html`<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>`,
+    reset: html`<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>`
+  };
+  function Icon({ name, className }) {
+    return html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className=${className || 'w-5 h-5'} aria-hidden="true">${ICONS[name]}</svg>`;
+  }
+
+  function useIsMobile() {
+    const q = '(max-width: 767px)';
+    const [m, setM] = useState(() => { try { return window.matchMedia(q).matches; } catch (e) { return false; } });
+    useEffect(() => {
+      let mq; try { mq = window.matchMedia(q); } catch (e) { return; }
+      const h = e => setM(e.matches);
+      if (mq.addEventListener) mq.addEventListener('change', h); else mq.addListener(h);
+      return () => { if (mq.removeEventListener) mq.removeEventListener('change', h); else mq.removeListener(h); };
+    }, []);
+    return m;
+  }
+
+  function QR({ text, size }) {
+    const ref = useRef(null);
+    useEffect(() => {
+      const el = ref.current; if (!el) return;
+      el.innerHTML = '';
+      try { new QRCode(el, { text: String(text).slice(0, 120), width: size || 128, height: size || 128, colorDark: '#0F2D59', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M }); }
+      catch (e) { el.textContent = 'QR'; }
+    }, [text, size]);
+    return html`<div ref=${ref} className="qr w-24 h-24 sm:w-28 sm:h-28 shrink-0 bg-white p-1.5 rounded-md border border-navy-100"></div>`;
+  }
+  function Barcode({ text }) {
+    let h = 7; for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+    const r = mulberry32(h); const bars = []; let x = 4;
+    bars.push(html`<rect key="s1" x="0" y="0" width="1.5" height="44" fill="#0F2D59"/>`, html`<rect key="s2" x="2.5" y="0" width="1.5" height="44" fill="#0F2D59"/>`);
+    while (x < 192) { const w = 1 + Math.floor(r() * 3); bars.push(html`<rect key=${x} x=${x} y="0" width=${w} height="38" fill="#0F2D59"/>`); x += w + 1 + Math.floor(r() * 2.5); }
+    bars.push(html`<rect key="e1" x="196" y="0" width="1.5" height="44" fill="#0F2D59"/>`, html`<rect key="e2" x="198.5" y="0" width="1.5" height="44" fill="#0F2D59"/>`);
+    return html`<div><svg viewBox="0 0 200 44" className="w-full h-11" preserveAspectRatio="none" role="img" aria-label="Barcode">${bars}</svg><div className="text-center text-[11px] tracking-[0.3em] text-mist num mt-0.5">${text}</div></div>`;
+  }
+  function ComBadge({ com, lang }) {
+    const c = COM[com] || COM.safed;
+    return html`<span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-semibold whitespace-nowrap" style=${{ background: c.color + '18', color: c.color }}>
+      <span className="w-1.5 h-1.5 rounded-full" style=${{ background: c.color }}></span>${c[lang]}</span>`;
+  }
+
+  // Bottom sheet on phones, centred card on desktop.
+  function Sheet({ onClose, children, label }) {
+    const closeRef = useRef(onClose); closeRef.current = onClose;
+    useEffect(() => {
+      const k = e => { if (e.key === 'Escape') closeRef.current(); };
+      window.addEventListener('keydown', k);
+      const prev = document.body.style.overflow; document.body.style.overflow = 'hidden';
+      return () => { window.removeEventListener('keydown', k); document.body.style.overflow = prev; };
+    }, []);
+    return html`<div className="fixed inset-0 z-50 flex items-end md:items-center justify-center md:p-6 fade-in" role="dialog" aria-modal="true" aria-label=${label}>
+      <div className="absolute inset-0 bg-navy-900/60 backdrop-blur-[2px]" onClick=${() => closeRef.current()}></div>
+      <div className="sheet relative w-full md:max-w-md max-h-[94vh] overflow-y-auto overscroll-contain bg-white rounded-t-3xl md:rounded-2xl shadow-2xl sheet-pad">
+        <div className="md:hidden flex justify-center pt-2.5 pb-1"><span className="w-10 h-1.5 rounded-full bg-navy-200"></span></div>
+        ${children}
+      </div>
+    </div>`;
+  }
+
+  function Bar({ pct, tone }) {
+    const p = Math.max(0, Math.min(100, safe(pct)));
+    const color = tone || (p >= 95 ? '#E07A00' : '#0F2D59');
+    return html`<div className="h-2 rounded-full bg-navy-50 overflow-hidden"><div className="h-full rounded-full transition-all duration-500" style=${{ width: p + '%', background: color }}></div></div>`;
+  }
+
+  /* ---------------- Dashboard ---------------- */
+  function Dashboard({ t, lang, cells, events, adv, temps, tick, goto }) {
+    const chSums = cells.map(chamberSum);
+    const stock = chSums.reduce((a, b) => a + b, 0);
+    const pct = stock / PLANT_CAP * 100;
+    const ins = events.filter(e => e.type === 'in'), outs = events.filter(e => e.type === 'out'), pays = events.filter(e => e.type === 'pay');
+    const inBags = ins.reduce((a, e) => a + safe(e.bags), 0), outBags = outs.reduce((a, e) => a + safe(e.bags), 0), cash = pays.reduce((a, e) => a + safe(e.amt), 0);
+    let baaki = 0, baakiN = 0;
+    Object.values(adv).forEach(list => { if (list && list.length) { baakiN++; list.forEach(a => { baaki += safe(a.amt) + interestOf(a).val; }); } });
+
+    const kpi = 'rounded-2xl bg-white border border-navy-100 p-3 sm:p-5 min-w-0';
+    return html`<div className="space-y-4 sm:space-y-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm text-mist">${fmtDate(iso(TODAY), lang)}</p>
+          <h1 className="font-display text-xl sm:text-3xl font-bold text-navy leading-tight">${t('greet')}</h1>
+          <p className="text-mist text-sm sm:text-base">${t('dash_sub')}</p>
+        </div>
+        <button onClick=${() => goto('in')} className="hidden md:inline-flex min-h-[48px] items-center gap-2 rounded-xl bg-amt px-5 font-semibold text-white shadow-sm hover:bg-amt-600">
+          <${Icon} name="plus" className="w-5 h-5"/>${t('new_gadi')}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-2.5 sm:gap-4">
+        <div className="rounded-2xl bg-navy text-white p-3 sm:p-5 relative overflow-hidden min-w-0">
+          <div className="absolute -right-6 -top-6 w-24 h-24 rounded-full bg-white/5"></div>
+          <div className="flex items-center gap-1.5 text-navy-200 text-xs sm:text-sm font-medium"><${Icon} name="box" className="w-4 h-4 shrink-0"/><span className="truncate">${t('kpi_stock')}</span></div>
+          <div className="mt-1 font-display text-2xl sm:text-4xl font-bold num leading-tight">${fmt(stock)}</div>
+          <div className="mt-2 h-2 rounded-full bg-white/15 overflow-hidden"><div className="h-full rounded-full bg-amt transition-all duration-500" style=${{ width: Math.min(100, pct) + '%' }}></div></div>
+          <div className="mt-1.5 text-xs sm:text-sm text-navy-200 num"><b className="text-white">${Math.round(pct)}% ${t('full')}</b><span className="hidden sm:inline"> · ${t('cap')} ${fmt(PLANT_CAP)} (~5,000 ${t('mt')})</span><span className="sm:hidden"> / ${fmt(PLANT_CAP)}</span></div>
+        </div>
+        <div className=${kpi}>
+          <div className="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-emerald-700"><span className="grid place-items-center w-6 h-6 sm:w-7 sm:h-7 shrink-0 rounded-lg bg-emerald-50"><${Icon} name="down" className="w-4 h-4"/></span><span className="truncate">${t('kpi_in')}</span></div>
+          <div className="mt-1.5 font-display text-2xl sm:text-3xl font-bold text-emerald-600 num leading-tight">+${fmt(inBags)}</div>
+          <div className="text-xs sm:text-sm text-mist">${t('bori')} · ${ins.length} ${t('gadi')}</div>
+        </div>
+        <div className=${kpi}>
+          <div className="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-rose-700"><span className="grid place-items-center w-6 h-6 sm:w-7 sm:h-7 shrink-0 rounded-lg bg-rose-50"><${Icon} name="up" className="w-4 h-4"/></span><span className="truncate">${t('kpi_out')}</span></div>
+          <div className="mt-1.5 font-display text-2xl sm:text-3xl font-bold text-rose-600 num leading-tight">−${fmt(outBags)}</div>
+          <div className="text-xs sm:text-sm text-mist">${t('bori')} · ${outs.length} ${t('gatepass')}</div>
+        </div>
+        <div className=${kpi}>
+          <div className="flex items-center gap-1.5 text-xs sm:text-sm font-medium text-amt-700"><span className="grid place-items-center w-6 h-6 sm:w-7 sm:h-7 shrink-0 rounded-lg bg-amt-50"><${Icon} name="rupee" className="w-4 h-4"/></span><span className="truncate">${t('kpi_cash')}</span></div>
+          <div className="mt-1.5 font-display text-xl sm:text-3xl font-bold text-navy num leading-tight">${rs(cash)}</div>
+          <div className="text-xs sm:text-sm text-mist truncate">${t('cash_in_hand')} · ${pays.length} ${t('payments')}</div>
+        </div>
+      </div>
+
+      <button onClick=${() => goto('khata')} className="w-full min-h-[56px] flex items-center justify-between gap-2 rounded-2xl border border-amt-200 bg-amt-50 px-4 py-3 text-left hover:bg-amt-100">
+        <span className="min-w-0 text-ink"><span className="block text-xs sm:text-sm text-amt-700 font-semibold">${t('baaki')}</span><span className="font-display text-lg sm:text-xl font-bold num">${rs(baaki)}</span> <span className="text-mist text-sm">· ${baakiN} ${t('kisan')}</span></span>
+        <span className="inline-flex items-center gap-1 text-sm font-semibold text-amt-700 shrink-0"><span className="hidden sm:inline">${t('view_khata')}</span><${Icon} name="arrow" className="w-5 h-5"/></span>
+      </button>
+
+      <div className="grid lg:grid-cols-[1.35fr_1fr] gap-5">
+        <section className="min-w-0">
+          <div className="flex items-center justify-between mb-2.5">
+            <h2 className="font-display text-lg font-bold text-navy">${t('ch_status')}</h2>
+            <span className="text-xs text-mist num">${t('updated')} ${tick}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2.5 sm:gap-3">
+            ${chSums.map((s, i) => {
+              const p = Math.floor(s / CH_CAP * 100);
+              const warn = p >= 95;
+              return html`<button key=${i} onClick=${() => goto('map', i)} className="min-w-0 text-left rounded-2xl bg-white border border-navy-100 p-3 sm:p-4 hover:border-navy-300 hover:shadow-sm">
+                <div className="flex items-start justify-between gap-1.5">
+                  <div className="min-w-0"><div className="font-display text-base sm:text-lg font-bold text-navy leading-tight">${t('ch')} ${i + 1}</div><div className="text-[11px] sm:text-xs text-mist truncate">${CH_MAIN[i][lang]}</div></div>
+                  <span className=${'shrink-0 rounded-full px-1.5 sm:px-2 py-0.5 text-[10px] sm:text-xs font-semibold ' + (warn ? 'bg-amt-100 text-amt-700' : 'bg-emerald-50 text-emerald-700')}>${warn ? t('nearfull') : t('ok')}</span>
+                </div>
+                <div className="mt-2 flex items-baseline justify-between gap-1 num"><span className="font-display text-xl sm:text-2xl font-bold text-ink">${p}%</span><span className="text-[11px] sm:text-sm text-mist truncate">${fmt(s)}<span className="hidden sm:inline"> / ${fmt(CH_CAP)}</span></span></div>
+                <div className="mt-1"><${Bar} pct=${p}/></div>
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs sm:text-sm">
+                  <span className="inline-flex items-center gap-1 text-sky-700 num font-semibold"><${Icon} name="thermo" className="w-4 h-4"/>${safe(temps[i]).toFixed(1)}°C</span>
+                  <span className="inline-flex items-center gap-1 text-mist num"><${Icon} name="drop" className="w-3.5 h-3.5"/>${CH_RH[i]}%</span>
+                </div>
+              </button>`;
+            })}
+          </div>
+        </section>
+
+        <section className="min-w-0">
+          <div className="flex items-center justify-between mb-2.5">
+            <h2 className="font-display text-lg font-bold text-navy">${t('activity')}</h2>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-700"><span className="live-dot w-2 h-2 rounded-full bg-emerald-500"></span>${t('live')}</span>
+          </div>
+          <ul className="rounded-2xl bg-white border border-navy-100 divide-y divide-navy-50 overflow-hidden">
+            ${events.slice(0, 10).map(e => {
+              const tone = e.type === 'in' ? ['bg-emerald-50 text-emerald-600', 'down', 'text-emerald-600'] : e.type === 'out' ? ['bg-rose-50 text-rose-600', 'up', 'text-rose-600'] : ['bg-amt-50 text-amt-600', 'rupee', 'text-navy'];
+              return html`<li key=${e.id} className=${'flex items-center gap-3 px-3 sm:px-4 py-3 ' + (e.fresh ? 'slide-in' : '')}>
+                <span className=${'grid place-items-center w-9 h-9 shrink-0 rounded-xl ' + tone[0]}><${Icon} name=${tone[1]} className="w-4 h-4"/></span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-ink truncate">${e.owner}</div>
+                  <div className="text-xs text-mist truncate">${e.type === 'pay' ? t('ev_pay') + ' · ' + (e.note || '') : (e.type === 'in' ? t('ev_in') : t('ev_out')) + ' · ' + (e.vehicle || '—') + ' · ' + (e.place || '')}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className=${'font-bold num ' + tone[2]}>${e.type === 'pay' ? rs(e.amt) : (e.type === 'in' ? '+' : '−') + fmt(e.bags)}</div>
+                  <div className="text-xs text-mist num">${e.time}</div>
+                </div>
+              </li>`;
+            })}
+          </ul>
+        </section>
+      </div>
+    </div>`;
+  }
+
+  /* ---------------- Gate Inward ---------------- */
+  const MAX_BAGS_PER_GADI = 5000;
+  function Inward({ t, lang, cells, onSave, notify }) {
+    const initCh = useMemo(() => { const s = cells.map(chamberSum); return s.indexOf(Math.min(...s)); }, []);
+    const initStart = useMemo(() => bestStart(cells, initCh), []);
+    const [form, setForm] = useState(() => ({ name: 'Kailash Kushwaha', village: 'Niwari', mobile: OWNERS[3].mobile, vehicle: 'MP-36 ZA 7742', bags: '320', com: 'safed', bardana: 'kisan', ch: initCh, f: initStart.f, g: initStart.g }));
+    const [err, setErr] = useState('');
+    const [token, setToken] = useState(null);
+    const busy = useRef(false);
+    const nameRef = useRef(null);
+    const known = OWNERS.find(o => norm(o.name) === norm(form.name));
+    const set = (k, v) => { setErr(''); setForm(p => ({ ...p, [k]: v })); };
+    const onName = v => {
+      const o = OWNERS.find(x => norm(x.name) === norm(v));
+      setErr(''); setForm(p => ({ ...p, name: v, ...(o ? { mobile: o.mobile, village: o.village } : {}) }));
+    };
+    const bagsN = toBags(form.bags);
+    const chFree = cells.map(c => CH_CAP - chamberSum(c));
+    const overChamber = bagsN > 0 && bagsN > chFree[form.ch];
+    const plan = bagsN > 0 && !overChamber ? allocate(cells, form.ch, form.f, form.g, bagsN) : null;
+    const autoPick = ch => { const b = bestStart(cells, ch); setErr(''); setForm(p => ({ ...p, ch, f: b.f, g: b.g })); };
+
+    const validate = () => {
+      if (!norm(form.name)) return t('err_name');
+      if (!(bagsN > 0)) return t('err_bags');
+      if (bagsN > MAX_BAGS_PER_GADI) return t('err_max', { n: fmt(MAX_BAGS_PER_GADI) });
+      const mob = digits(form.mobile);
+      if (mob && !/^[6-9]\d{9}$/.test(mob)) return t('err_mobile');
+      if (form.vehicle.replace(/[^A-Za-z0-9]/g, '').length < 4) return t('err_vehicle');
+      if (overChamber || !plan) return t('err_chamber', { c: form.ch + 1, n: fmt(chFree[form.ch]) });
+      return '';
+    };
+    const submit = e => {
+      e.preventDefault();
+      if (busy.current) return;
+      const msg = validate();
+      if (msg) { setErr(msg); notify(msg, 'error'); return; }
+      busy.current = true;
+      const lot = onSave({ ...form, name: form.name.replace(/\s+/g, ' ').trim(), village: form.village.trim(), mobile: digits(form.mobile), vehicle: form.vehicle.trim(), bags: bagsN, plan });
+      setToken(lot);
+      // Clear the truck-specific fields at once so a second Enter cannot create a duplicate lot.
+      setForm(p => ({ ...p, name: '', village: '', mobile: '', vehicle: '', bags: '' }));
+      setTimeout(() => { busy.current = false; }, 400);
+    };
+    const newEntry = () => { setToken(null); setTimeout(() => nameRef.current && nameRef.current.focus(), 60); };
+    const inputCls = 'w-full min-h-[48px] rounded-xl border border-navy-200 bg-white px-3.5 py-2.5 text-[16px] text-ink placeholder:text-navy-300 focus:border-navy-500 focus:ring-2 focus:ring-navy-100 outline-none';
+    const label = 'block text-sm font-semibold text-navy-700 mb-1';
+    const planSet = new Set((plan || []).map(p => p.f + '-' + p.g));
+
+    return html`<div className="space-y-4 sm:space-y-5">
+      <div>
+        <h1 className="font-display text-2xl sm:text-3xl font-bold text-navy">${t('in_title')}</h1>
+        <p className="text-mist text-sm sm:text-base">${t('in_sub')}</p>
+      </div>
+      <div className="grid lg:grid-cols-[1.4fr_1fr] gap-5">
+        <form onSubmit=${submit} noValidate className="min-w-0 rounded-2xl bg-white border border-navy-100 p-4 sm:p-6 space-y-4" autoComplete="off">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4">
+            <div className="col-span-2">
+              <label htmlFor="in-name" className=${label}>${t('f_name')}</label>
+              <input id="in-name" ref=${nameRef} list="owner-list" className=${inputCls} value=${form.name} onChange=${e => onName(e.target.value)} placeholder="Rameshwar Patel" enterKeyHint="next" maxLength="60"/>
+              <datalist id="owner-list">${OWNERS.map(o => html`<option key=${o.id} value=${o.name}>${o.village}</option>`)}</datalist>
+              ${norm(form.name) ? html`<p className=${'mt-1 text-xs inline-flex items-center gap-1 ' + (known ? 'text-emerald-700' : 'text-navy-500')}><${Icon} name=${known ? 'check' : 'plus'} className="w-3.5 h-3.5"/>${known ? t('known') : t('new_party')}</p>` : null}
+            </div>
+            <div>
+              <label htmlFor="in-mobile" className=${label}>${t('f_mobile')}</label>
+              <input id="in-mobile" type="tel" inputMode="numeric" className=${inputCls + ' num'} value=${form.mobile} onChange=${e => set('mobile', digits(e.target.value).slice(0, 10))} placeholder="98XXXXXXXX"/>
+            </div>
+            <div>
+              <label htmlFor="in-village" className=${label}>${t('f_village')}</label>
+              <input id="in-village" className=${inputCls} value=${form.village} onChange=${e => set('village', e.target.value)} placeholder="Bhojpura" maxLength="40"/>
+            </div>
+            <div>
+              <label htmlFor="in-vehicle" className=${label}>${t('f_vehicle')}</label>
+              <input id="in-vehicle" className=${inputCls + ' uppercase num'} value=${form.vehicle} onChange=${e => set('vehicle', e.target.value.toUpperCase().slice(0, 16))} placeholder="MP-36 ZA 0000" autoCapitalize="characters"/>
+            </div>
+            <div>
+              <label htmlFor="in-bags" className=${label}>${t('f_bags')}</label>
+              <input id="in-bags" type="text" inputMode="numeric" pattern="[0-9]*" className=${inputCls + ' num font-bold text-lg'} value=${form.bags} onChange=${e => set('bags', e.target.value.replace(/[^\d]/g, '').replace(/^0+(?=\d)/, '').slice(0, 6))} placeholder="0"/>
+            </div>
+          </div>
+
+          <div>
+            <span className=${label}>${t('f_com')}</span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              ${Object.keys(COM).map(k => html`<button type="button" key=${k} onClick=${() => set('com', k)}
+                className=${'min-h-[52px] rounded-xl border px-3 py-2 text-left ' + (form.com === k ? 'border-navy bg-navy-50 ring-2 ring-navy-100' : 'border-navy-100 hover:border-navy-300')}>
+                <span className="flex items-center gap-1.5 font-semibold text-ink"><span className="w-2.5 h-2.5 rounded-full" style=${{ background: COM[k].color }}></span>${COM[k][lang]}</span>
+                <span className="text-xs text-mist">${COM[k].tag[lang]}</span>
+              </button>`)}
+            </div>
+          </div>
+
+          <div>
+            <span className=${label}>${t('f_bardana')}</span>
+            <div className="grid grid-cols-2 rounded-xl bg-navy-50 p-1 sm:inline-grid">
+              ${[['kisan', t('bd_kisan')], ['store', t('bd_store')]].map(([k, l]) => html`<button type="button" key=${k} onClick=${() => set('bardana', k)}
+                className=${'min-h-[44px] rounded-lg px-4 text-sm font-semibold ' + (form.bardana === k ? 'bg-white text-navy shadow-sm' : 'text-mist')}>${l}</button>`)}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-dashed border-navy-200 p-3 sm:p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold text-navy-700">${t('f_place')}</span>
+              <button type="button" onClick=${() => autoPick(form.ch)} className="min-h-[40px] rounded-lg bg-navy-50 px-3 text-sm font-semibold text-navy hover:bg-navy-100">${t('auto')}</button>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              ${[0, 1, 2, 3].map(i => html`<button type="button" key=${i} onClick=${() => autoPick(i)}
+                className=${'min-w-0 min-h-[56px] rounded-xl border px-1 py-2 text-center ' + (form.ch === i ? 'border-navy bg-navy text-white' : (bagsN > chFree[i] ? 'border-rose-200 bg-rose-50/50' : 'border-navy-100 hover:border-navy-300'))}>
+                <div className="font-display font-bold leading-tight">C${i + 1}</div>
+                <div className=${'text-[11px] num leading-tight ' + (form.ch === i ? 'text-navy-200' : 'text-mist')}>${fmt(chFree[i])} ${t('free')}</div>
+              </button>`)}
+            </div>
+            ${overChamber ? html`<div className="flex items-start gap-2 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2.5 text-sm font-semibold text-rose-700" role="alert">
+              <${Icon} name="alert" className="w-5 h-5 shrink-0"/><span>${t('err_chamber', { c: form.ch + 1, n: fmt(chFree[form.ch]) })}</span></div>` : null}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="in-floor" className="block text-xs font-semibold text-mist mb-1">${t('f_floor')}</label>
+                <select id="in-floor" className=${inputCls} value=${form.f} onChange=${e => set('f', Number(e.target.value))}>
+                  ${[0, 1, 2, 3].map(f => html`<option key=${f} value=${f}>Floor ${f + 1}</option>`)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="in-gulla" className="block text-xs font-semibold text-mist mb-1">${t('f_gulla')}</label>
+                <select id="in-gulla" className=${inputCls} value=${form.g} onChange=${e => set('g', Number(e.target.value))}>
+                  ${Array.from({ length: GULLAS }, (_, g) => html`<option key=${g} value=${g}>G${pad(g + 1, 2)} · ${CELL_CAP - cellSum(cells[form.ch][form.f][g])} ${t('free')}</option>`)}
+                </select>
+              </div>
+            </div>
+            ${plan && plan.length ? html`<p className="text-sm text-navy-700"><b className="num">${locLabel(form.ch, plan)}</b>${plan.length > 1 ? html` <span className="text-mist">· ${t('spill', { n: plan.length })}</span>` : null}</p>` : null}
+          </div>
+
+          ${err ? html`<p className="flex items-start gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-sm font-medium text-rose-700" role="alert"><${Icon} name="alert" className="w-5 h-5 shrink-0"/>${err}</p>` : null}
+
+          <button type="submit" className="w-full min-h-[56px] inline-flex items-center justify-center gap-2 rounded-xl bg-amt px-5 text-lg font-bold text-white shadow-sm hover:bg-amt-600">
+            <${Icon} name="check" className="w-5 h-5"/>${t('save_token')}
+            <kbd className="hidden lg:inline ml-2 rounded bg-white/20 px-1.5 py-0.5 text-xs font-semibold">Enter</kbd>
+          </button>
+        </form>
+
+        <aside className="hidden md:block min-w-0 space-y-4">
+          <div className="rounded-2xl bg-white border border-navy-100 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-display font-bold text-navy">${t('ch')} ${form.ch + 1} · ${t('space_title')}</h2>
+              <span className="text-sm text-mist num">${fmt(chFree[form.ch])} ${t('free')}</span>
+            </div>
+            <div className="space-y-1.5">
+              ${[3, 2, 1, 0].map(f => html`<div key=${f} className="flex items-center gap-1.5">
+                <span className="w-6 text-xs font-semibold text-mist">F${f + 1}</span>
+                <div className="grid grid-cols-10 gap-1 flex-1">
+                  ${cells[form.ch][f].map((lots, g) => {
+                    const p = cellSum(lots) / CELL_CAP; const tgt = planSet.has(f + '-' + g);
+                    return html`<div key=${g} title=${'F' + (f + 1) + ' G' + (g + 1) + ': ' + cellSum(lots) + '/' + CELL_CAP}
+                      className=${'h-6 rounded ' + (tgt ? 'ring-2 ring-amt ring-offset-1' : '')}
+                      style=${{ background: tgt ? '#E07A00' : `rgba(15,45,89,${0.08 + 0.7 * p})` }}></div>`;
+                  })}
+                </div>
+              </div>`)}
+            </div>
+            <div className="mt-3 flex items-center gap-3 text-xs text-mist">
+              <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded" style=${{ background: 'rgba(15,45,89,.1)' }}></span>${t('free')}</span>
+              <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded" style=${{ background: 'rgba(15,45,89,.75)' }}></span>${t('filled')}</span>
+              <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded bg-amt"></span>${t('target')}</span>
+            </div>
+          </div>
+          <div className="rounded-2xl bg-navy-50 p-4 text-sm text-navy-700 space-y-1">
+            <p className="font-semibold">${lang === 'hi' ? 'सेव करते ही:' : 'Save karte hi:'}</p>
+            <p>1. ${lang === 'hi' ? 'लॉट पर्ची QR के साथ बनेगी' : 'Lot Parchi QR ke saath banegi'}</p>
+            <p>2. ${lang === 'hi' ? 'किसान के WhatsApp पर रसीद जाएगी' : 'Kisan ke WhatsApp par raseed jayegi'}</p>
+            <p>3. ${lang === 'hi' ? 'मालिक के फ़ोन पर स्टॉक तुरंत बढ़ेगा' : 'Malik ke phone par stock turant badhega'}</p>
+          </div>
+        </aside>
+      </div>
+
+      ${token ? html`<${Sheet} label=${t('token_title')} onClose=${() => setToken(null)}>
+        <div className="mx-3 md:mx-0 rounded-2xl md:rounded-b-none bg-navy text-white px-5 pt-4 pb-4">
+          <div className="flex items-start justify-between gap-3">
+            <div><div className="font-display text-xl font-bold leading-tight">AMT COLD STORAGE</div><div className="text-xs text-navy-200">Bhojpura, Dist Niwari (M.P.)</div></div>
+            <button onClick=${() => setToken(null)} className="grid place-items-center w-11 h-11 -mr-2 -mt-1 rounded-xl hover:bg-white/10" aria-label=${t('close')}><${Icon} name="x"/></button>
+          </div>
+          <div className="mt-2 inline-flex items-center gap-2 rounded-full bg-amt px-3 py-1 text-sm font-bold">${t('token_title')} · ${token.id}</div>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex gap-4">
+            <${QR} text=${'AMT|' + token.id + '|' + token.loc + '|' + token.bags} size=${132}/>
+            <div className="min-w-0 flex-1 space-y-2">
+              <div><div className="text-xs text-mist">${t('farmer')}</div><div className="font-bold text-ink leading-tight break-words">${token.name}</div><div className="text-sm text-mist">${token.village || '—'} · ${fmtMobile(token.mobile)}</div></div>
+              <div><div className="text-xs text-mist">${t('f_vehicle')}</div><div className="font-semibold num">${token.vehicle}</div></div>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3 rounded-xl bg-navy-50 p-3">
+            <div><div className="text-xs text-mist">${t('bags')}</div><div className="font-display text-2xl font-bold text-navy num">${fmt(token.bags)}</div></div>
+            <div><div className="text-xs text-mist">${t('f_com')}</div><div className="mt-1"><${ComBadge} com=${token.com} lang=${lang}/></div></div>
+            <div className="col-span-2"><div className="text-xs text-mist">${t('location')}</div><div className="font-display text-lg font-bold text-navy num">${token.loc}</div></div>
+            <div><div className="text-xs text-mist">${t('date')}</div><div className="font-semibold num">${fmtDate(iso(TODAY), lang)} · ${token.time}</div></div>
+            <div><div className="text-xs text-mist">${t('f_bardana')}</div><div className="font-semibold">${token.bardana === 'store' ? t('bd_store') : t('bd_kisan')}</div></div>
+          </div>
+          <${Barcode} text=${token.id.replace(/-/g, '')}/>
+          <p className="text-xs text-mist text-center">${t('token_note')}</p>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick=${() => notify(t('wa_demo'), 'info')} className="min-h-[52px] inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 font-bold text-white hover:bg-emerald-700"><${Icon} name="send" className="w-4 h-4"/>${t('wa')}</button>
+            <button onClick=${newEntry} className="min-h-[52px] rounded-xl border border-navy-200 px-3 font-bold text-navy hover:bg-navy-50">${t('new_entry')}</button>
+          </div>
+        </div>
+      <//>` : null}
+    </div>`;
+  }
+
+  /* ---------------- Chamber map ---------------- */
+  function ChamberMap({ t, lang, cells, ch, setCh, openKhata, isMobile }) {
+    const [sel, setSel] = useState({ f: 1, g: 4 });
+    const [sheet, setSheet] = useState(false);
+    const [q, setQ] = useState('');
+    const active = norm(q).length > 0;
+    const match = lots => active && lots.some(l => OWNERS[l.owner] && ownerMatches(OWNERS[l.owner], q, [l.id]));
+    const matchCount = active ? cells[ch].reduce((a, f) => a + f.filter(match).length, 0) : 0;
+    const lots = cells[ch][sel.f][sel.g];
+    const filled = cellSum(lots);
+    const pick = (f, g) => { setSel({ f, g }); if (isMobile) setSheet(true); };
+
+    const detail = html`<div>
+      <div className="text-xs font-semibold text-mist eyebrow">${t('location')}</div>
+      <div className="font-display text-2xl font-bold text-navy num">C${ch + 1} · F${sel.f + 1} · G${pad(sel.g + 1, 2)}</div>
+      <div className="mt-2 flex items-baseline justify-between text-sm num"><span className="text-ink font-semibold">${fmt(filled)} / ${CELL_CAP} ${t('bori')}</span><span className="text-mist">${Math.round(filled / CELL_CAP * 100)}% ${t('filled')}</span></div>
+      <div className="mt-1.5"><${Bar} pct=${filled / CELL_CAP * 100}/></div>
+      <ul className="mt-4 space-y-3">
+        ${lots.length === 0 ? html`<li className="rounded-xl bg-navy-50 p-4 text-center text-mist">${t('empty_cell')}</li>` : lots.map(l => {
+          const o = OWNERS[l.owner] || { name: '—', village: '—' };
+          return html`<li key=${l.id} className="rounded-xl border border-navy-100 p-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0"><div className="font-bold text-ink truncate">${o.name}</div><div className="text-xs text-mist">${o.village} · ${l.id}</div></div>
+              <div className="text-right shrink-0"><div className="font-display text-xl font-bold text-navy num leading-none">${fmt(l.bags)}</div><div className="text-[11px] text-mist">${t('bori')}</div></div>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+              <${ComBadge} com=${l.com} lang=${lang}/>
+              <span className="text-mist num">${t('arrived')}: ${fmtDate(l.date, lang)} · ${daysSince(l.date)} ${t('days')}</span>
+            </div>
+            <button onClick=${() => { setSheet(false); openKhata(l.owner); }} className="mt-2 min-h-[44px] inline-flex items-center gap-1 text-sm font-semibold text-amt-700 hover:text-amt-600">${t('open_khata')}<${Icon} name="arrow" className="w-4 h-4"/></button>
+          </li>`;
+        })}
+      </ul>
+    </div>`;
+
+    return html`<div className="space-y-4 sm:space-y-5">
+      <div>
+        <h1 className="font-display text-2xl sm:text-3xl font-bold text-navy">${t('map_title')}</h1>
+        <p className="text-mist text-sm sm:text-base">${t('map_sub')}</p>
+      </div>
+
+      <div className="grid grid-cols-4 gap-2 sm:gap-3">
+        ${cells.map((c, i) => {
+          const s = chamberSum(c), p = Math.floor(s / CH_CAP * 100);
+          return html`<button key=${i} onClick=${() => setCh(i)} className=${'min-w-0 min-h-[64px] rounded-2xl border p-2 sm:p-3 text-left ' + (ch === i ? 'border-navy bg-navy text-white shadow-md' : 'border-navy-100 bg-white hover:border-navy-300')}>
+            <div className="flex items-center justify-between gap-1"><span className="font-display font-bold"><span className="sm:hidden">C${i + 1}</span><span className="hidden sm:inline">${t('ch')} ${i + 1}</span></span><span className="text-xs sm:text-sm font-bold num">${p}%</span></div>
+            <div className=${'hidden sm:block text-xs num ' + (ch === i ? 'text-navy-200' : 'text-mist')}>${fmt(s)} / ${fmt(CH_CAP)}</div>
+            <div className=${'mt-1.5 sm:mt-2 h-1.5 rounded-full overflow-hidden ' + (ch === i ? 'bg-white/20' : 'bg-navy-50')}><div className="h-full rounded-full" style=${{ width: p + '%', background: p >= 95 ? '#E07A00' : (ch === i ? '#fff' : '#0F2D59') }}></div></div>
+          </button>`;
+        })}
+      </div>
+
+      <div className="grid xl:grid-cols-[1fr_360px] gap-5">
+        <section className="min-w-0 rounded-2xl bg-white border border-navy-100 p-3 sm:p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3 mb-3 sm:mb-4">
+            <div className="relative w-full sm:w-80">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-navy-300 pointer-events-none"><${Icon} name="search" className="w-4 h-4"/></span>
+              <input id="map-search" type="search" className="w-full min-h-[48px] rounded-xl border border-navy-200 pl-9 pr-3 text-[15px] outline-none focus:border-navy-500 focus:ring-2 focus:ring-navy-100" placeholder=${t('find_owner')} value=${q} onChange=${e => setQ(e.target.value)}/>
+            </div>
+            ${active ? html`<span className=${'text-sm font-semibold ' + (matchCount ? 'text-amt-700' : 'text-rose-600')}>${matchCount ? t('matches', { n: matchCount }) : t('no_match')}</span>` : html`
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-mist">${Object.keys(COM).map(k => html`<span key=${k} className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full" style=${{ background: COM[k].color }}></span>${COM[k][lang]}</span>`)}</div>`}
+          </div>
+          <div className="grid grid-cols-[20px_repeat(10,minmax(0,1fr))] sm:grid-cols-[34px_repeat(10,minmax(0,1fr))] gap-1 sm:gap-1.5 mb-1 sm:mb-1.5">
+            <span></span>
+            ${Array.from({ length: GULLAS }, (_, g) => html`<span key=${g} className="text-center text-[10px] sm:text-[11px] font-semibold text-mist"><span className="sm:hidden">${g + 1}</span><span className="hidden sm:inline">G${pad(g + 1, 2)}</span></span>`)}
+          </div>
+          ${[3, 2, 1, 0].map(f => html`<div key=${f} className="grid grid-cols-[20px_repeat(10,minmax(0,1fr))] sm:grid-cols-[34px_repeat(10,minmax(0,1fr))] gap-1 sm:gap-1.5 mb-1 sm:mb-1.5">
+            <span className="self-center text-[11px] sm:text-xs font-bold text-navy-600">F${f + 1}</span>
+            ${cells[ch][f].map((lc, g) => {
+              const s = cellSum(lc), p = s / CELL_CAP;
+              const isSel = !isMobile && sel.f === f && sel.g === g;
+              const m = match(lc);
+              const dim = active && !m;
+              const coms = [...new Set(lc.map(l => l.com))];
+              return html`<button key=${g} onClick=${() => pick(f, g)} aria-label=${'Floor ' + (f + 1) + ' Gulla ' + (g + 1) + ', ' + s + ' bori'}
+                className=${'relative min-w-0 h-12 sm:h-14 rounded-md sm:rounded-lg text-[10px] sm:text-[11px] font-bold num ' + (isSel ? 'ring-[3px] ring-amt ring-offset-1 z-10 ' : '') + (m ? 'ring-2 ring-amt ' : '') + (dim ? 'opacity-25' : '')}
+                style=${{ background: `rgba(15,45,89,${0.07 + 0.78 * p})`, color: p > 0.5 ? '#fff' : '#0F2D59' }}>
+                <span className="absolute left-0.5 top-0.5 sm:left-1 sm:top-1 flex gap-0.5">${coms.map(c => html`<span key=${c} className="w-1.5 h-1.5 rounded-full ring-1 ring-white/70" style=${{ background: COM[c].color }}></span>`)}</span>
+                <span className="absolute bottom-0.5 right-0.5 sm:bottom-1 sm:right-1.5">${s}</span>
+              </button>`;
+            })}
+          </div>`)}
+          <p className="mt-2 text-xs text-mist">${t('cell_note')}</p>
+        </section>
+
+        <aside className="hidden md:block min-w-0 rounded-2xl bg-white border border-navy-100 p-5 fade-in" key=${ch + '-' + sel.f + '-' + sel.g}>${detail}</aside>
+      </div>
+
+      ${sheet && isMobile ? html`<${Sheet} label=${t('location')} onClose=${() => setSheet(false)}>
+        <div className="relative px-5 pt-1 pb-2">
+          <button onClick=${() => setSheet(false)} className="absolute right-3 top-0 grid place-items-center w-11 h-11 rounded-xl text-mist hover:bg-navy-50" aria-label=${t('close')}><${Icon} name="x"/></button>
+          ${detail}
+        </div>
+      <//>` : null}
+    </div>`;
+  }
+
+  /* ---------------- Kisan Khata & Billing ---------------- */
+  // Pure bill math. Every edge case (0 bags, no advance, partial release, advance bigger than bill) resolves here.
+  function computeBill({ total, bags, useBd, mode, rate, advSum, intSum, advInput }) {
+    const errors = [];
+    const typed = String(bags == null ? '' : bags).trim();
+    const bN = toBags(typed);
+    if (typed !== '' && !isFinite(bN)) errors.push(['err_relnum', { n: fmt(total) }]);
+    const b = isFinite(bN) ? bN : 0;
+    if (b > total) errors.push(['err_rel', { n: fmt(total) }]);
+    const bb = Math.max(0, Math.min(b, total));
+    const rent = bb * RATE.rent, ham = bb * RATE.hamali, bd = useBd ? bb * RATE.bardana : 0;
+    const charges = rent + ham + bd;
+    const advDue = safe(advSum) + safe(intSum);
+    let advPay = 0, collect = 0, payOut = 0, saleVal = 0, afterCharges = 0;
+    if (mode === 'cash') {
+      const raw = String(advInput == null ? '' : advInput).trim();
+      const a = raw === '' ? 0 : toMoney(raw);
+      if (!isFinite(a) || a < 0 || a > advDue) errors.push(['err_advamt', { n: rs(advDue) }]);
+      advPay = isFinite(a) ? Math.max(0, Math.min(advDue, Math.round(a))) : 0;
+      collect = charges + advPay;
+    } else {
+      const r = toMoney(rate);
+      if (bb > 0 && (!isFinite(r) || r <= 0)) errors.push(['err_rate']);
+      saleVal = bb * (isFinite(r) ? r : 0);
+      afterCharges = saleVal - charges;
+      if (afterCharges >= 0) { advPay = Math.min(afterCharges, advDue); payOut = afterCharges - advPay; }
+      else { advPay = 0; collect = -afterCharges; }
+    }
+    advPay = Math.round(advPay);
+    const advLeft = Math.max(0, Math.round(advDue - advPay));
+    if (bb === 0 && advPay === 0 && !errors.length) errors.push(['err_nothing']);
+    return { b: bb, rent, ham, bd, charges, advDue, advPay, advLeft, collect: Math.round(collect), payOut: Math.round(payOut), saleVal, afterCharges, remain: Math.max(0, total - bb), errors };
+  }
+
+  function Khata({ t, lang, cells, adv, farmer, setFarmer, onFinalize, counters, isMobile }) {
+    const [q, setQ] = useState('');
+    const [open, setOpen] = useState(false);
+    const searchRef = useRef(null);
+    const stockBy = useMemo(() => {
+      const m = {};
+      cells.forEach((c, ch) => c.forEach((fl, f) => fl.forEach((lots, g) => lots.forEach(l => { (m[l.owner] = m[l.owner] || []).push({ ...l, ch, f, g }); }))));
+      Object.values(m).forEach(a => a.sort((x, y) => x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
+      return m;
+    }, [cells]);
+    const results = OWNERS.filter(o => ownerMatches(o, q, (stockBy[o.id] || []).map(l => l.id)))
+      .sort((a, b) => ((stockBy[b.id] || []).length - (stockBy[a.id] || []).length)).slice(0, 8);
+    const o = OWNERS[farmer] || OWNERS[0];
+    const lots = stockBy[o.id] || [];
+    const total = lots.reduce((a, l) => a + l.bags, 0);
+    const advRows = (adv[o.id] || []).map(a => ({ ...a, ...interestOf(a) }));
+    const advSum = advRows.reduce((a, r) => a + safe(r.amt), 0), intSum = advRows.reduce((a, r) => a + r.val, 0);
+    const advDue = advSum + intSum;
+
+    const [bags, setBags] = useState(String(total));
+    const [useBd, setUseBd] = useState(true);
+    const [mode, setMode] = useState('cash');
+    const [rate, setRate] = useState('650');
+    const [advInput, setAdvInput] = useState(String(advDue));
+    const [showBill, setShowBill] = useState(false);
+    const [vehicle, setVehicle] = useState('UP-93 BT 5521');
+    const [vErr, setVErr] = useState('');
+    const busy = useRef(false);
+    // When the farmer or his balance changes (after a bill), start from his full stock and full dues.
+    useEffect(() => { setBags(String(total)); }, [farmer, total]);
+    useEffect(() => { setAdvInput(String(advDue)); }, [farmer, advDue]);
+    useEffect(() => { setShowBill(false); }, [farmer]);
+
+    useEffect(() => {
+      const k = e => { if (e.key === '/' && !/INPUT|SELECT|TEXTAREA/.test((document.activeElement || {}).tagName || '')) { e.preventDefault(); searchRef.current && searchRef.current.focus(); } };
+      window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
+    }, []);
+
+    const bill = computeBill({ total, bags, useBd, mode, rate, advSum, intSum, advInput });
+    const canBill = bill.errors.length === 0;
+    const billNo = 'AMT/B/26/' + pad(counters.bill, 4), gpNo = 'GP-' + pad(counters.gp, 4);
+    const net = mode === 'sale' && bill.afterCharges >= 0 ? { label: bill.payOut > 0 ? t('to_pay') : t('settled'), val: bill.payOut, good: true } : { label: t('to_collect'), val: bill.collect, good: false };
+
+    const pick = id => { setFarmer(id); setQ(''); setOpen(false); if (searchRef.current) searchRef.current.blur(); };
+    const openBill = () => { if (!canBill) return; setVErr(''); setShowBill(true); };
+    const finalize = () => {
+      if (busy.current || !canBill) return;
+      if (bill.b > 0 && vehicle.replace(/[^A-Za-z0-9]/g, '').length < 4) { setVErr(t('err_vout')); return; }
+      busy.current = true;
+      onFinalize({ owner: o.id, bags: bill.b, advPay: bill.advPay, cashIn: bill.collect, vehicle: vehicle.trim(), gp: gpNo, com: lots[0] ? lots[0].com : 'safed' });
+      setShowBill(false);
+      setTimeout(() => { busy.current = false; }, 400);
+    };
+
+    const Line = ({ l, sub, v, strong, neg }) => html`<div className=${'flex items-baseline justify-between gap-3 py-1.5 ' + (strong ? 'font-bold text-ink' : 'text-ink')}>
+      <span className="min-w-0">${l}${sub ? html`<span className="block text-xs text-mist font-normal num">${sub}</span>` : null}</span>
+      <span className=${'num shrink-0 ' + (neg ? 'text-rose-600' : '')}>${neg ? '−' : ''}${rs(v)}</span></div>`;
+    const firstErr = bill.errors[0];
+    const errorBox = firstErr ? html`<p className="mt-3 flex items-start gap-2 rounded-xl bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700" role="alert"><${Icon} name="alert" className="w-4 h-4 mt-0.5 shrink-0"/>${t(firstErr[0], firstErr[1])}</p>` : null;
+    const inputBase = 'min-h-[48px] rounded-xl border border-navy-200 px-3.5 font-bold num outline-none focus:border-navy-500 focus:ring-2 focus:ring-navy-100';
+
+    return html`<div className="space-y-4 sm:space-y-5">
+      <div>
+        <h1 className="font-display text-2xl sm:text-3xl font-bold text-navy">${t('kh_title')}</h1>
+        <p className="text-mist text-sm sm:text-base">${t('kh_sub')}</p>
+      </div>
+
+      <div className="relative max-w-xl">
+        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-navy-300 pointer-events-none"><${Icon} name="search" className="w-5 h-5"/></span>
+        <input id="kh-search" type="search" ref=${searchRef} className="w-full min-h-[52px] rounded-2xl border border-navy-200 bg-white pl-11 pr-12 text-[16px] outline-none shadow-sm focus:border-navy-500 focus:ring-2 focus:ring-navy-100"
+          placeholder=${t('search')} value=${q} onChange=${e => { setQ(e.target.value); setOpen(true); }} onFocus=${() => setOpen(true)} onBlur=${() => setTimeout(() => setOpen(false), 180)}
+          onKeyDown=${e => { if (e.key === 'Enter' && results[0]) { e.preventDefault(); pick(results[0].id); } if (e.key === 'Escape') setOpen(false); }}/>
+        <kbd className="hidden lg:block absolute right-3 top-1/2 -translate-y-1/2 rounded border border-navy-200 px-1.5 text-xs text-mist">/</kbd>
+        ${open ? html`<ul className="absolute z-30 mt-2 w-full max-h-[60vh] overflow-y-auto overscroll-contain rounded-2xl bg-white border border-navy-100 shadow-xl fade-in">
+          ${results.length === 0 ? html`<li className="px-4 py-4 text-sm text-mist">${t('no_results')}</li>` : results.map(r => {
+            const st = (stockBy[r.id] || []).reduce((a, l) => a + l.bags, 0);
+            const ad = (adv[r.id] || []).length > 0;
+            return html`<li key=${r.id}><button onMouseDown=${e => e.preventDefault()} onClick=${() => pick(r.id)} className="w-full min-h-[56px] flex items-center justify-between gap-3 px-4 py-2 text-left hover:bg-navy-50 active:bg-navy-50">
+              <span className="min-w-0"><span className="block font-semibold text-ink truncate">${r.name}</span><span className="text-xs text-mist num">${r.village} · ${fmtMobile(r.mobile)}</span></span>
+              <span className="text-right shrink-0 text-sm num"><span className="font-bold text-navy">${fmt(st)}</span> <span className="text-mist">${t('bori')}</span>${ad ? html`<span className="block text-[11px] font-semibold text-amt-700">${t('adv_title')}</span>` : null}</span>
+            </button></li>`;
+          })}
+        </ul>` : null}
+      </div>
+
+      <div className="grid xl:grid-cols-[1fr_400px] gap-5 items-start">
+        <div className="min-w-0 space-y-4 sm:space-y-5">
+          <div className="rounded-2xl bg-navy text-white p-4 sm:p-5">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="grid place-items-center w-12 h-12 shrink-0 rounded-2xl bg-white/10 font-display text-xl font-bold">${o.name.split(' ').filter(Boolean).map(w => w[0]).slice(0, 2).join('').toUpperCase()}</span>
+              <div className="min-w-0"><div className="font-display text-xl font-bold leading-tight truncate">${o.name}</div><div className="text-sm text-navy-200 num">${o.village} · ${fmtMobile(o.mobile)}</div></div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3 num">
+              <div className="rounded-xl bg-white/10 px-3 py-2"><div className="text-xs text-navy-200">${t('stock')}</div><div className="font-display text-2xl font-bold">${fmt(total)} <span className="text-sm font-normal text-navy-200">${t('bori')}</span></div></div>
+              <div className="rounded-xl bg-white/10 px-3 py-2"><div className="text-xs text-navy-200">${t('outstanding')}</div><div className="font-display text-2xl font-bold text-amt-200">${rs(advDue)}</div></div>
+            </div>
+          </div>
+
+          <section className="rounded-2xl bg-white border border-navy-100 overflow-hidden">
+            <div className="flex items-center justify-between px-4 sm:px-5 pt-4 pb-2"><h2 className="font-display text-lg font-bold text-navy">${t('stock')}</h2><span className="text-sm text-mist num">${lots.length} ${t('lot')}</span></div>
+            ${lots.length === 0 ? html`<p className="px-4 sm:px-5 pb-5 text-mist">${t('no_stock')}</p>` : html`
+            <ul className="md:hidden px-3 pb-3 space-y-2 max-h-[420px] overflow-y-auto overscroll-contain">
+              ${lots.map(l => html`<li key=${l.id + '-' + l.ch + l.f + l.g} className="rounded-xl border border-navy-100 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0"><div className="font-bold text-ink num">${l.id}</div><div className="text-xs text-mist num">${fmtDate(l.date, lang)} · ${daysSince(l.date)} ${t('days')}</div></div>
+                  <div className="text-right shrink-0"><div className="font-display text-xl font-bold text-navy num leading-none">${fmt(l.bags)}</div><div className="text-[11px] text-mist">${t('bori')}</div></div>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2"><${ComBadge} com=${l.com} lang=${lang}/><span className="rounded-full bg-navy-50 px-2 py-0.5 text-xs font-semibold text-navy-700 num">C${l.ch + 1}·F${l.f + 1}·G${pad(l.g + 1, 2)}</span></div>
+              </li>`)}
+            </ul>
+            <div className="hidden md:block overflow-x-auto max-h-80">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-navy-50 text-navy-700"><tr>
+                  <th className="text-left font-semibold px-5 py-2">${t('lot')}</th><th className="text-left font-semibold px-2 py-2">${t('arrived')}</th><th className="text-left font-semibold px-2 py-2">${t('f_com')}</th><th className="text-left font-semibold px-2 py-2">${t('place')}</th><th className="text-right font-semibold px-5 py-2">${t('bags')}</th>
+                </tr></thead>
+                <tbody className="divide-y divide-navy-50">
+                  ${lots.map(l => html`<tr key=${l.id + '-' + l.ch + l.f + l.g}>
+                    <td className="px-5 py-2 num text-mist">${l.id}</td>
+                    <td className="px-2 py-2 num">${fmtDate(l.date, lang)}<span className="block text-[11px] text-mist">${daysSince(l.date)} ${t('days')}</span></td>
+                    <td className="px-2 py-2"><${ComBadge} com=${l.com} lang=${lang}/></td>
+                    <td className="px-2 py-2 num font-semibold text-navy-700">C${l.ch + 1}·F${l.f + 1}·G${pad(l.g + 1, 2)}</td>
+                    <td className="px-5 py-2 text-right num font-bold">${fmt(l.bags)}</td>
+                  </tr>`)}
+                </tbody>
+              </table>
+            </div>`}
+          </section>
+
+          <section className="rounded-2xl bg-white border border-navy-100 overflow-hidden">
+            <div className="flex items-center justify-between gap-2 px-4 sm:px-5 pt-4 pb-2"><h2 className="font-display text-lg font-bold text-navy">${t('adv_title')}</h2><span className="rounded-full bg-amt-50 px-2 py-0.5 text-xs font-semibold text-amt-700 shrink-0">${t('adv_rate')}</span></div>
+            ${advRows.length === 0 ? html`<p className="px-4 sm:px-5 pb-5 text-mist">${t('no_adv')}</p>` : html`
+            <ul className="md:hidden px-3 pb-3 space-y-2">
+              ${advRows.map((r, i) => html`<li key=${i} className="rounded-xl border border-navy-100 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0"><div className="font-semibold text-ink num">${r.byaj ? t('unpaid_int') : (r.carry ? t('carry') : t('given'))}: ${fmtDate(r.date, lang)}</div><div className="text-xs text-mist">${dur(r.days, t)}</div></div>
+                  <div className="text-right shrink-0 font-display text-lg font-bold text-navy num">${rs(r.amt + r.val)}</div>
+                </div>
+                <div className="mt-1.5 flex justify-between gap-2 text-sm num"><span className="text-mist">${t('amount')} ${rs(r.amt)}</span><span className="font-semibold text-amt-700">+ ${t('interest')} ${rs(r.val)}</span></div>
+              </li>`)}
+              <li className="rounded-xl bg-amt-50 p-3 flex justify-between font-bold num"><span>${t('total')}</span><span>${rs(advDue)}</span></li>
+            </ul>
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-navy-50 text-navy-700"><tr>
+                  <th className="text-left font-semibold px-5 py-2">${t('given')}</th><th className="text-right font-semibold px-2 py-2">${t('amount')}</th><th className="text-right font-semibold px-2 py-2">${t('stored')}</th><th className="text-right font-semibold px-2 py-2">${t('interest')}</th><th className="text-right font-semibold px-5 py-2">${t('total')}</th>
+                </tr></thead>
+                <tbody className="divide-y divide-navy-50">
+                  ${advRows.map((r, i) => html`<tr key=${i}>
+                    <td className="px-5 py-2 num">${fmtDate(r.date, lang)}${r.carry ? html`<span className="block text-[11px] text-mist">${r.byaj ? t('unpaid_int') : t('carry')}</span>` : null}</td>
+                    <td className="px-2 py-2 text-right num">${rs(r.amt)}</td>
+                    <td className="px-2 py-2 text-right num text-mist">${dur(r.days, t)}</td>
+                    <td className="px-2 py-2 text-right num text-amt-700 font-semibold">${rs(r.val)}</td>
+                    <td className="px-5 py-2 text-right num font-bold">${rs(r.amt + r.val)}</td>
+                  </tr>`)}
+                  <tr className="bg-amt-50/60 font-bold"><td className="px-5 py-2">${t('total')}</td><td className="px-2 py-2 text-right num">${rs(advSum)}</td><td></td><td className="px-2 py-2 text-right num text-amt-700">${rs(intSum)}</td><td className="px-5 py-2 text-right num">${rs(advDue)}</td></tr>
+                </tbody>
+              </table>
+            </div>`}
+          </section>
+        </div>
+
+        <aside className="min-w-0 rounded-2xl bg-white border-2 border-navy-100 p-4 sm:p-5 xl:sticky xl:top-24">
+          <h2 className="font-display text-lg font-bold text-navy">${t('bill_title')}</h2>
+          <label htmlFor="bill-bags" className="mt-3 block text-sm font-semibold text-navy-700">${t('release')}</label>
+          <div className="mt-1 flex gap-2">
+            <input id="bill-bags" type="text" inputMode="numeric" pattern="[0-9]*" value=${bags} onChange=${e => setBags(e.target.value.replace(/[^\d]/g, '').replace(/^0+(?=\d)/, '').slice(0, 6))} className=${inputBase + ' min-w-0 flex-1 text-xl'}/>
+            <button onClick=${() => setBags(String(total))} className="min-h-[48px] rounded-xl bg-navy-50 px-4 font-semibold text-navy hover:bg-navy-100 shrink-0">${t('all')} ${fmt(total)}</button>
+          </div>
+          <p className="mt-1 text-xs text-mist num">${t('remain_bags')}: <b className="text-ink">${fmt(bill.remain)} ${t('bori')}</b></p>
+
+          <div className="mt-3 grid grid-cols-2 rounded-xl bg-navy-50 p-1">
+            ${[['cash', t('mode_cash')], ['sale', t('mode_sale')]].map(([k, l]) => html`<button key=${k} onClick=${() => setMode(k)} className=${'min-h-[44px] rounded-lg px-2 text-sm font-semibold ' + (mode === k ? 'bg-white text-navy shadow-sm' : 'text-mist')}>${l}</button>`)}
+          </div>
+          ${mode === 'sale' ? html`<div className="mt-3">
+            <label htmlFor="bill-rate" className="block text-sm font-semibold text-navy-700 mb-1">${t('sale_rate')}</label>
+            <div className="relative"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-mist">₹</span><input id="bill-rate" type="text" inputMode="decimal" value=${rate} onChange=${e => setRate(e.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1').slice(0, 8))} className=${inputBase + ' w-full pl-7'}/></div>
+          </div>` : null}
+
+          <label className="mt-3 flex min-h-[44px] items-center gap-2 text-sm"><input id="bill-bd" type="checkbox" checked=${useBd} onChange=${e => setUseBd(e.target.checked)} className="w-5 h-5 accent-[#0F2D59]"/>${t('use_bardana')}</label>
+
+          ${mode === 'cash' && bill.advDue > 0 ? html`<div className="mt-2">
+            <label htmlFor="bill-adv" className="block text-sm font-semibold text-navy-700 mb-1">${t('adv_now')} <span className="font-normal text-mist num">(${t('outstanding')} ${rs(bill.advDue)})</span></label>
+            <div className="flex gap-2">
+              <div className="relative flex-1 min-w-0"><span className="absolute left-3 top-1/2 -translate-y-1/2 text-mist">₹</span><input id="bill-adv" type="text" inputMode="numeric" value=${advInput} onChange=${e => setAdvInput(e.target.value.replace(/[^\d]/g, '').slice(0, 9))} className=${inputBase + ' w-full pl-7'}/></div>
+              <button onClick=${() => setAdvInput(String(bill.advDue))} className="min-h-[48px] rounded-xl bg-navy-50 px-3 text-sm font-semibold text-navy shrink-0">${t('full_amt')}</button>
+              <button onClick=${() => setAdvInput('0')} className="min-h-[48px] rounded-xl bg-navy-50 px-3 text-sm font-semibold text-navy shrink-0">${t('none')}</button>
+            </div>
+          </div>` : null}
+
+          <div className="mt-4 divide-y divide-dashed divide-navy-100 border-y border-navy-100">
+            ${mode === 'sale' ? html`<${Line} l=${t('sale_val')} sub=${fmt(bill.b) + ' × ₹' + fmt(toMoney(rate) || 0)} v=${bill.saleVal}/>` : null}
+            <div className="py-1">
+              <${Line} l=${t('rent')} sub=${fmt(bill.b) + ' × ₹' + RATE.rent} v=${bill.rent} neg=${mode === 'sale'}/>
+              <${Line} l=${t('hamali')} sub=${fmt(bill.b) + ' × ₹' + RATE.hamali} v=${bill.ham} neg=${mode === 'sale'}/>
+              <${Line} l=${t('bardana')} sub=${useBd ? fmt(bill.b) + ' × ₹' + RATE.bardana : '—'} v=${bill.bd} neg=${mode === 'sale'}/>
+            </div>
+            ${bill.advDue > 0 ? html`<div className="py-1">
+              ${mode === 'sale' ? html`<${Line} l=${t('after_charges')} v=${Math.max(0, bill.afterCharges)}/>` : null}
+              <${Line} l=${mode === 'sale' ? t('adv_cut') : t('adv_int')} sub=${rs(advSum) + ' + ' + t('interest') + ' ' + rs(intSum)} v=${bill.advPay} neg=${mode === 'sale'}/>
+              ${bill.advLeft > 0 ? html`<div className="flex items-baseline justify-between gap-3 py-1.5 text-amt-700 font-semibold"><span>${t('adv_left')}</span><span className="num">${rs(bill.advLeft)}</span></div>` : null}
+            </div>` : null}
+          </div>
+          <div className=${'mt-3 rounded-xl p-3 ' + (net.good ? 'bg-emerald-50' : 'bg-navy text-white')}>
+            <div className=${'text-sm font-semibold ' + (net.good ? 'text-emerald-700' : 'text-navy-200')}>${net.label}</div>
+            <div className=${'font-display text-3xl font-bold num ' + (net.good ? 'text-emerald-700' : '')}>${rs(net.val)}</div>
+          </div>
+          ${errorBox}
+          <button disabled=${!canBill} onClick=${openBill} className="mt-3 w-full min-h-[56px] inline-flex items-center justify-center gap-2 rounded-xl bg-amt px-4 font-bold text-white hover:bg-amt-600 disabled:opacity-40 disabled:cursor-not-allowed">
+            <${Icon} name="send" className="w-5 h-5"/>${bill.b > 0 ? t('make_bill') : t('adv_receipt')}
+          </button>
+        </aside>
+      </div>
+
+      ${isMobile && !showBill ? html`<div className="above-nav fixed inset-x-0 z-30 px-3 md:hidden pointer-events-none">
+        <div className="pointer-events-auto flex items-center gap-3 rounded-2xl bg-ink text-white pl-4 pr-2 py-2 shadow-2xl">
+          <div className="min-w-0 flex-1"><div className="text-[11px] text-navy-200 truncate">${net.label} · ${fmt(bill.b)} ${t('bori')}</div><div className="font-display text-xl font-bold num leading-tight">${rs(net.val)}</div></div>
+          <button disabled=${!canBill} onClick=${openBill} className="min-h-[48px] rounded-xl bg-amt px-4 font-bold text-white disabled:opacity-40">${t('make_short')}</button>
+        </div>
+      </div>` : null}
+
+      ${showBill ? html`<${Sheet} label=${t('bill')} onClose=${() => setShowBill(false)}>
+        <div className="px-5 pt-2 md:pt-5 pb-4 border-b-2 border-dashed border-navy-100">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0"><div className="font-display text-xl font-bold text-navy leading-tight">AMT COLD STORAGE</div><div className="text-xs text-mist">Plot No 30/2/1, Near New Betwa Pull, Bhojpura, Niwari (M.P.)</div></div>
+            <button onClick=${() => setShowBill(false)} className="grid place-items-center w-11 h-11 -mr-2 rounded-xl text-mist hover:bg-navy-50 shrink-0" aria-label=${t('close')}><${Icon} name="x"/></button>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
+            <span className="rounded-full bg-navy px-2.5 py-1 text-white">${bill.b > 0 ? t('bill') : t('adv_receipt')} · ${billNo}</span>
+            ${bill.b > 0 ? html`<span className="rounded-full bg-amt px-2.5 py-1 text-white">${t('gp')} · ${gpNo}</span>` : null}
+          </div>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex gap-4">
+            <div className="min-w-0 flex-1 space-y-2">
+              <div><div className="text-xs text-mist">${t('farmer')}</div><div className="font-bold text-ink leading-tight">${o.name}</div><div className="text-sm text-mist num">${o.village} · ${fmtMobile(o.mobile)}</div></div>
+              <div><div className="text-xs text-mist">${t('date')}</div><div className="font-semibold num">${fmtDate(iso(TODAY), lang)}</div></div>
+            </div>
+            <${QR} text=${'AMT|' + (bill.b > 0 ? gpNo : billNo) + '|' + bill.b} size=${120}/>
+          </div>
+          ${bill.b > 0 ? html`<div>
+            <label htmlFor="bill-vehicle" className="block text-xs font-semibold text-mist mb-1">${t('vehicle_out')}</label>
+            <input id="bill-vehicle" value=${vehicle} onChange=${e => { setVErr(''); setVehicle(e.target.value.toUpperCase().slice(0, 16)); }} className="w-full min-h-[48px] rounded-xl border border-navy-200 px-3 font-semibold num uppercase outline-none focus:border-navy-500"/>
+            ${vErr ? html`<p className="mt-1 text-sm font-medium text-rose-700">${vErr}</p>` : null}
+          </div>` : null}
+          <div className="rounded-xl bg-navy-50 px-3 py-1 text-sm">
+            ${mode === 'sale' ? html`<${Line} l=${t('sale_val')} sub=${fmt(bill.b) + ' × ₹' + fmt(toMoney(rate) || 0)} v=${bill.saleVal}/>` : null}
+            ${bill.b > 0 ? html`<${Line} l=${t('rent')} sub=${fmt(bill.b) + ' ' + t('bori') + ' × ₹' + RATE.rent} v=${bill.rent} neg=${mode === 'sale'}/>` : null}
+            ${bill.b > 0 ? html`<${Line} l=${t('hamali')} sub=${fmt(bill.b) + ' × ₹' + RATE.hamali} v=${bill.ham} neg=${mode === 'sale'}/>` : null}
+            ${bill.bd ? html`<${Line} l=${t('bardana')} sub=${fmt(bill.b) + ' × ₹' + RATE.bardana} v=${bill.bd} neg=${mode === 'sale'}/>` : null}
+            ${bill.advPay ? html`<${Line} l=${t('adv_int')} v=${bill.advPay} neg=${mode === 'sale'}/>` : null}
+            <div className="border-t border-navy-200 mt-1"><${Line} l=${net.label} v=${net.val} strong=${true}/></div>
+            ${bill.advLeft > 0 ? html`<div className="flex justify-between gap-3 py-1.5 text-amt-700 font-semibold"><span>${t('adv_left')}</span><span className="num">${rs(bill.advLeft)}</span></div>` : null}
+            ${bill.b > 0 ? html`<div className="flex justify-between gap-3 py-1.5 text-mist"><span>${t('remain_bags')}</span><span className="num font-semibold text-ink">${fmt(bill.remain)} ${t('bori')}</span></div>` : null}
+          </div>
+          <${Barcode} text=${(bill.b > 0 ? gpNo : billNo).replace(/[^A-Z0-9]/gi, '')}/>
+          <p className="text-xs text-mist text-center">${t('print_note')}</p>
+          <button onClick=${finalize} className="w-full min-h-[56px] inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 font-bold text-white hover:bg-emerald-700">
+            <${Icon} name="check" className="w-5 h-5"/>${t('finalize')}
+          </button>
+        </div>
+      <//>` : null}
+    </div>`;
+  }
+
+  /* ---------------- App shell ---------------- */
+  const TABS = ['dash', 'in', 'map', 'khata'];
+  const TAB_ICON = { dash: 'home', in: 'truck', map: 'snow', khata: 'wallet' };
+
+  function App() {
+    const isMobile = useIsMobile();
+    const boot = useMemo(() => { const s = loadState(); if (s) { applyExtraOwners(s.extra); return { ...s, restored: true }; } applyExtraOwners([]); return { ...freshState(), restored: false }; }, []);
+    const [lang, setLang] = useState(() => { try { return localStorage.getItem('amt-lang') === 'hi' ? 'hi' : 'en'; } catch (e) { return 'en'; } });
+    const [tab, setTab] = useState(() => { const h = (location.hash || '').slice(1); return TABS.includes(h) ? h : 'dash'; });
+    const [cells, setCells] = useState(boot.cells);
+    const [events, setEvents] = useState(boot.events);
+    const [adv, setAdv] = useState(boot.adv);
+    const [nextLot, setNextLot] = useState(boot.nextLot);
+    const [counters, setCounters] = useState(boot.counters);
+    const [extra, setExtra] = useState(boot.extra);
+    const [farmer, setFarmer] = useState(0);
+    const [mapCh, setMapCh] = useState(2);
+    const [toast, setToast] = useState(null);
+    const [askReset, setAskReset] = useState(false);
+    const [canSave, setCanSave] = useState(true);
+    const [temps, setTemps] = useState(CH_TEMP);
+    const [tick, setTick] = useState(() => new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    const [ver, setVer] = useState(0);
+    const skipFirstSave = useRef(!boot.restored);
+
+    const t = useCallback((k, v) => { let s = (DICT[lang][k] != null ? DICT[lang][k] : (DICT.en[k] != null ? DICT.en[k] : k)); if (v) for (const x in v) s = s.split('{' + x + '}').join(v[x]); return s; }, [lang]);
+    const changeLang = l => { setLang(l); try { localStorage.setItem('amt-lang', l); } catch (e) { } };
+    const notify = useCallback((msg, kind) => setToast({ msg, kind: kind || 'ok', id: Date.now() + Math.random() }), []);
+    useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), toast.kind === 'error' ? 4500 : 3600); return () => clearTimeout(id); }, [toast]);
+    useEffect(() => { document.documentElement.lang = lang === 'hi' ? 'hi' : 'en'; }, [lang]);
+
+    // Persist every change to this browser (the untouched sample is not written).
+    useEffect(() => {
+      if (skipFirstSave.current) { skipFirstSave.current = false; return; }
+      const ok = saveState({ cells, events: events.slice(0, 60).map(e => { const { fresh, ...rest } = e; return rest; }), adv, nextLot, counters, extra });
+      setCanSave(ok);
+    }, [cells, events, adv, nextLot, counters, extra]);
+
+    const goto = useCallback((tb, ch) => { if (typeof ch === 'number') setMapCh(ch); setTab(tb); try { history.replaceState(null, '', '#' + tb); } catch (e) { } window.scrollTo({ top: 0 }); }, []);
+
+    useEffect(() => {
+      const k = e => { if (e.altKey && ['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); goto(TABS[Number(e.key) - 1]); } };
+      window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
+    }, [goto]);
+
+    // Ignore a tap that lands while the finger is still scrolling (prevents accidental clicks on phones).
+    useEffect(() => {
+      let startX = 0, startY = 0, moved = false, lastTouch = 0, lastScroll = 0;
+      const ts = e => { const p = e.touches && e.touches[0]; if (!p) return; startX = p.clientX; startY = p.clientY; moved = false; lastTouch = Date.now(); };
+      const tm = e => { const p = e.touches && e.touches[0]; if (!p) return; if (Math.abs(p.clientX - startX) > 10 || Math.abs(p.clientY - startY) > 10) moved = true; };
+      const sc = () => { if (Date.now() - lastTouch < 1500) lastScroll = Date.now(); };
+      const ck = e => {
+        if (Date.now() - lastTouch > 800) return;
+        if (moved || (lastScroll && Date.now() - lastScroll < 100)) { e.preventDefault(); e.stopPropagation(); moved = false; }
+      };
+      window.addEventListener('touchstart', ts, { passive: true, capture: true });
+      window.addEventListener('touchmove', tm, { passive: true, capture: true });
+      document.addEventListener('scroll', sc, { passive: true, capture: true });
+      window.addEventListener('click', ck, true);
+      return () => {
+        window.removeEventListener('touchstart', ts, { capture: true });
+        window.removeEventListener('touchmove', tm, { capture: true });
+        document.removeEventListener('scroll', sc, { capture: true });
+        window.removeEventListener('click', ck, true);
+      };
+    }, []);
+
+    useEffect(() => {
+      const id = setInterval(() => {
+        setTemps(prev => prev.map((v, i) => { const n = v + (Math.random() - 0.5) * 0.2; return Math.min(CH_TEMP[i] + 0.3, Math.max(CH_TEMP[i] - 0.3, n)); }));
+        setTick(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      }, 5000);
+      return () => clearInterval(id);
+    }, []);
+
+    const saveInward = form => {
+      const id = lotNo(nextLot);
+      let oi = (OWNERS.find(o => norm(o.name) === norm(form.name)) || {}).id;
+      if (oi == null) {
+        const rec = { name: form.name, village: form.village || '—', mobile: form.mobile || '' };
+        OWNERS.push({ id: OWNERS.length, w: 0, ...rec }); oi = OWNERS.length - 1;
+        setExtra(x => [...x, rec]);
+      }
+      const next = cloneCells(cells);
+      form.plan.forEach(p => next[form.ch][p.f][p.g].push({ id, owner: oi, bags: p.n, com: form.com, date: iso(TODAY) }));
+      setCells(next);
+      setNextLot(n => n + 1);
+      const time = nowTime();
+      setEvents(ev => [{ id: 'n' + Date.now(), fresh: true, time, type: 'in', owner: form.name, vehicle: form.vehicle, bags: form.bags, com: form.com, place: 'C' + (form.ch + 1) + ' · F' + (form.plan[0].f + 1) }, ...ev]);
+      notify(t('done_in', { id, n: fmt(form.bags) }));
+      return { id, name: form.name, village: form.village, mobile: form.mobile, vehicle: form.vehicle, bags: form.bags, com: form.com, bardana: form.bardana, loc: locLabel(form.ch, form.plan), time };
+    };
+
+    const finalizeBill = ({ owner, bags, advPay, cashIn, vehicle, gp, com }) => {
+      const time = nowTime(); const name = OWNERS[owner].name;
+      const evs = [];
+      if (bags > 0) {
+        const next = cloneCells(cells);
+        const refs = [];
+        next.forEach(c => c.forEach(fl => fl.forEach(lots => lots.forEach(l => { if (l.owner === owner) refs.push(l); }))));
+        refs.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+        let rem = bags;
+        for (const l of refs) { if (rem <= 0) break; const take = Math.min(l.bags, rem); l.bags -= take; rem -= take; }
+        next.forEach(c => c.forEach(fl => fl.forEach((lots, g) => { fl[g] = lots.filter(l => l.bags > 0); })));
+        setCells(next);
+        evs.push({ id: 'o' + Date.now(), fresh: true, time, type: 'out', owner: name, vehicle: vehicle || '—', bags, com, place: gp });
+        setCounters(c => ({ bill: c.bill + 1, gp: c.gp + 1 }));
+      } else {
+        setCounters(c => ({ ...c, bill: c.bill + 1 }));
+      }
+      if (advPay > 0) setAdv(a => ({ ...a, [owner]: settleAdvances(a[owner], advPay) }));
+      if (cashIn > 0) evs.unshift({ id: 'p' + Date.now(), fresh: true, time, type: 'pay', owner: name, amt: cashIn, note: 'Cash' + (bags > 0 ? ' · ' + gp : '') });
+      if (evs.length) setEvents(ev => [...evs, ...ev]);
+      notify(bags > 0 ? t('done_out', { n: fmt(bags), gp }) : t('done_adv', { amt: rs(advPay) }));
+    };
+
+    const doReset = () => {
+      const s = freshState();
+      applyExtraOwners([]);
+      try { localStorage.removeItem(STORE_KEY); } catch (e) { }
+      skipFirstSave.current = true;
+      setCells(s.cells); setEvents(s.events); setAdv(s.adv); setNextLot(s.nextLot); setCounters(s.counters); setExtra([]);
+      setFarmer(0); setMapCh(2); setAskReset(false); setVer(v => v + 1); setCanSave(true);
+      notify(t('reset_done'));
+    };
+
+    const openKhata = id => { setFarmer(id); goto('khata'); };
+    const navLabel = { dash: t('nav_dash'), in: t('nav_in'), map: t('nav_map'), khata: t('nav_khata') };
+    const navSub = { dash: t('nav_dash_s'), in: t('nav_in_s'), map: t('nav_map_s'), khata: t('nav_khata_s') };
+    const navShort = { dash: t('bn_dash'), in: t('bn_in'), map: t('bn_map'), khata: t('bn_khata') };
+    const mainPad = tab === 'khata' ? 'pb-48' : tab === 'dash' ? 'pb-36' : 'pb-28';
+
+    return html`<div className="min-h-full">
+      <header className="top-bar sticky z-40 bg-navy text-white shadow-md no-select">
+        <div className="mx-auto max-w-[1400px] px-4 md:px-6 h-14 md:h-16 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="grid place-items-center w-9 h-9 md:w-10 md:h-10 shrink-0 rounded-xl bg-amt text-white"><${Icon} name="snow" className="w-5 h-5 md:w-6 md:h-6"/></span>
+            <div className="min-w-0">
+              <div className="font-display text-[17px] md:text-xl font-bold leading-none tracking-tight truncate">AMT COLD STORAGE</div>
+              <div className="mt-1 flex items-center gap-1.5 text-[11px] md:text-xs text-navy-200 min-w-0">
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/20 px-1.5 py-px font-bold text-emerald-300"><span className="live-dot w-1.5 h-1.5 rounded-full bg-emerald-400"></span>${t('live')}</span>
+                <span className="truncate">${t('tagline')}</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 md:gap-3 shrink-0">
+            <span className="hidden lg:inline-flex items-center rounded-full border border-amt/60 bg-amt/15 px-2.5 py-1 text-xs font-semibold text-amt-200">${t('demo')}</span>
+            <button onClick=${() => setAskReset(true)} className="inline-flex items-center justify-center gap-1.5 min-h-[40px] min-w-[40px] rounded-lg bg-white/10 px-2 md:px-3 text-sm font-semibold text-navy-100 hover:bg-white/20" aria-label=${t('reset')} title=${t('reset')}>
+              <${Icon} name="reset" className="w-4 h-4"/><span className="hidden md:inline">${t('reset')}</span>
+            </button>
+            <div className="inline-flex rounded-lg bg-white/10 p-0.5" role="group" aria-label="Language">
+              ${[['en', 'EN'], ['hi', 'हिंदी']].map(([k, l]) => html`<button key=${k} onClick=${() => changeLang(k)} aria-pressed=${lang === k}
+                className=${'min-h-[36px] rounded-md px-2 md:px-2.5 text-sm font-semibold ' + (lang === k ? 'bg-white text-navy' : 'text-navy-100 hover:text-white')}>${l}</button>`)}
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-[1400px] md:grid md:grid-cols-[232px_minmax(0,1fr)]">
+        <nav className="hidden md:block sticky top-16 self-start h-[calc(100vh-4rem)] overflow-y-auto border-r border-navy-100 bg-white px-3 py-5 no-select">
+          <div className="space-y-1">
+            ${TABS.map((k, i) => html`<button key=${k} onClick=${() => goto(k)} aria-current=${tab === k ? 'page' : undefined}
+              className=${'w-full min-h-[56px] flex items-center gap-3 rounded-xl px-3 py-2 text-left ' + (tab === k ? 'bg-navy text-white shadow-sm' : 'text-ink hover:bg-navy-50')}>
+              <span className=${'grid place-items-center w-9 h-9 shrink-0 rounded-lg ' + (tab === k ? 'bg-white/10 text-amt-200' : 'bg-navy-50 text-navy')}><${Icon} name=${TAB_ICON[k]} className="w-5 h-5"/></span>
+              <span className="min-w-0 flex-1"><span className="block font-semibold leading-tight">${navLabel[k]}</span><span className=${'block text-xs truncate ' + (tab === k ? 'text-navy-200' : 'text-mist')}>${navSub[k]}</span></span>
+              <kbd className=${'text-[11px] font-semibold rounded px-1.5 ' + (tab === k ? 'bg-white/10 text-navy-100' : 'bg-navy-50 text-mist')}>${i + 1}</kbd>
+            </button>`)}
+          </div>
+          <p className="mt-3 px-3 text-xs text-mist">${t('shortcuts')}</p>
+          <div className="mt-6 mx-1 rounded-xl bg-canvas p-3 text-xs text-mist space-y-0.5">
+            <div className="font-semibold text-navy-700">${t('plant')}</div>
+            <div className="num">${t('cap')}: ${fmt(PLANT_CAP)} ${t('bori')} (~5,000 ${t('mt')})</div>
+            <div className="num">4 ${t('ch')} · 4 Floor · 10 Gulla</div>
+          </div>
+          <p className=${'mt-3 px-3 text-[11px] ' + (canSave ? 'text-mist' : 'text-rose-600 font-semibold')}>${canSave ? t('saved_here') : t('not_saved')}</p>
+        </nav>
+
+        <main className=${'min-w-0 px-4 md:px-6 lg:px-8 pt-4 md:pt-5 md:pb-12 ' + mainPad}>
+          <div className="md:hidden mb-3 flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center rounded-full bg-amt-50 px-2.5 py-0.5 text-xs font-semibold text-amt-700">${t('demo')}</span>
+            ${!canSave ? html`<span className="text-[11px] font-semibold text-rose-600">${t('not_saved')}</span>` : null}
+          </div>
+          <div className="fade-in" key=${tab + '-' + ver}>
+            ${tab === 'dash' ? html`<${Dashboard} t=${t} lang=${lang} cells=${cells} events=${events} adv=${adv} temps=${temps} tick=${tick} goto=${goto}/>` : null}
+            ${tab === 'in' ? html`<${Inward} t=${t} lang=${lang} cells=${cells} onSave=${saveInward} notify=${notify}/>` : null}
+            ${tab === 'map' ? html`<${ChamberMap} t=${t} lang=${lang} cells=${cells} ch=${mapCh} setCh=${setMapCh} openKhata=${openKhata} isMobile=${isMobile}/>` : null}
+            ${tab === 'khata' ? html`<${Khata} t=${t} lang=${lang} cells=${cells} adv=${adv} farmer=${farmer} setFarmer=${setFarmer} onFinalize=${finalizeBill} counters=${counters} isMobile=${isMobile}/>` : null}
+          </div>
+        </main>
+      </div>
+
+      ${isMobile && tab === 'dash' ? html`<button onClick=${() => goto('in')} className="above-nav fixed right-4 z-30 inline-flex items-center gap-2 min-h-[52px] rounded-full bg-amt pl-4 pr-5 font-bold text-white shadow-xl" aria-label=${t('new_gadi')}>
+        <${Icon} name="plus" className="w-5 h-5"/>${t('new_gadi')}
+      </button>` : null}
+
+      <nav className="bottom-nav md:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-navy-100 shadow-[0_-4px_16px_rgba(15,45,89,.08)] no-select">
+        <div className="grid grid-cols-4 h-[64px]">
+          ${TABS.map(k => html`<button key=${k} onClick=${() => goto(k)} aria-current=${tab === k ? 'page' : undefined} className="flex min-w-0 flex-col items-center justify-center gap-1">
+            <span className=${'grid place-items-center w-14 h-8 rounded-full ' + (tab === k ? 'bg-navy text-white' : 'text-mist')}><${Icon} name=${TAB_ICON[k]} className="w-5 h-5"/></span>
+            <span className=${'max-w-full truncate px-1 text-[11.5px] font-semibold leading-none ' + (tab === k ? 'text-navy' : 'text-mist')}>${navShort[k]}</span>
+          </button>`)}
+        </div>
+      </nav>
+
+      ${askReset ? html`<${Sheet} label=${t('reset_q')} onClose=${() => setAskReset(false)}>
+        <div className="p-5 pt-3 md:pt-5 space-y-3">
+          <div className="flex items-center gap-3"><span className="grid place-items-center w-11 h-11 shrink-0 rounded-xl bg-amt-50 text-amt-700"><${Icon} name="reset" className="w-5 h-5"/></span><h2 className="font-display text-xl font-bold text-navy">${t('reset_q')}</h2></div>
+          <p className="text-mist">${t('reset_d')}</p>
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button onClick=${() => setAskReset(false)} className="min-h-[52px] rounded-xl border border-navy-200 font-bold text-navy hover:bg-navy-50">${t('cancel')}</button>
+            <button onClick=${doReset} className="min-h-[52px] rounded-xl bg-rose-600 font-bold text-white hover:bg-rose-700">${t('yes_reset')}</button>
+          </div>
+        </div>
+      <//>` : null}
+
+      ${toast ? html`<div key=${toast.id} className="toast-pos fixed z-[60] left-4 right-4 md:left-1/2 md:right-auto md:-translate-x-1/2 md:w-[28rem] pop-in" role=${toast.kind === 'error' ? 'alert' : 'status'}>
+        <div className=${'flex items-start gap-3 rounded-2xl px-4 py-3 shadow-2xl text-white ' + (toast.kind === 'error' ? 'bg-rose-600' : 'bg-ink')}>
+          <span className=${'grid place-items-center w-6 h-6 shrink-0 rounded-full ' + (toast.kind === 'error' ? 'bg-white/20' : toast.kind === 'info' ? 'bg-sky-500' : 'bg-emerald-500')}><${Icon} name=${toast.kind === 'error' ? 'alert' : 'check'} className="w-4 h-4"/></span>
+          <span className="text-sm font-medium">${toast.msg}</span>
+        </div>
+      </div>` : null}
+    </div>`;
+  }
+
+  // Expose the pure bill math for a quick self-check in tests; harmless in the page.
+  window.__amt = { computeBill, settleAdvances, interestOf, ownerMatches, toBags, allocate };
+  ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+})();
+</script>
